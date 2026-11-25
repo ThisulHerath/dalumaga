@@ -5,3 +5,10 @@ dist/
 !.env.example
 *.sqlite
 *.sqlite-*
+.turbo/
+.expo/
+coverage/
+*.tsbuildinfo
+apps/mobile/android/
+apps/mobile/ios/
+.husky/_/
