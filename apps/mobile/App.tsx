@@ -49,6 +49,7 @@ export default function App() {
     [busy, setBusy] = useState(false);
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const [scanning, setScanning] = useState(false);
+  const [crateMessage, setCrateMessage] = useState('');
   const [crateInput, setCrateInput] = useState('');
   const scanHandled = useRef(false);
   const syncing = useRef(false);
@@ -269,7 +270,7 @@ export default function App() {
     if (match.kind === 'match') {
       setSelected(match.load);
       setCrateInput(match.load.crateCode);
-      setMessage('Crate selected / පෙට්ටිය තෝරා ඇත');
+      setCrateMessage('Crate selected / පෙට්ටිය තෝරා ඇත');
       return;
     }
     const messages = {
@@ -278,19 +279,20 @@ export default function App() {
       recorded: 'Crate already recorded / පෙට්ටියේ බර දැනටමත් සටහන් කර ඇත',
       ambiguous: 'Code matches multiple loads. Contact the office / කාර්යාලය අමතන්න',
     };
-    setMessage(messages[match.kind]);
+    setCrateMessage(messages[match.kind]);
   }
   async function openScanner() {
     const permission = cameraPermission?.granted
       ? cameraPermission
       : await requestCameraPermission();
     if (!permission.granted) {
-      setMessage(
+      setCrateMessage(
         'Camera access denied. Enter the crate code below / කැමරාව වෙනුවට අංකය ඇතුළත් කරන්න',
       );
       return;
     }
     scanHandled.current = false;
+    setCrateMessage('');
     setScanning(true);
   }
   return (
@@ -370,11 +372,12 @@ export default function App() {
             </View>
           )}
           <Text>Or enter crate code / හෝ පෙට්ටි අංකය ඇතුළත් කරන්න</Text>
+          <Text accessibilityLiveRegion="polite">{crateMessage}</Text>
           <TextInput
             accessibilityLabel="Crate code / පෙට්ටි අංකය"
             value={crateInput}
             onChangeText={setCrateInput}
-            autoCapitalize="characters"
+            autoCapitalize="none"
             style={{ borderWidth: 1, padding: 12, minHeight: 48 }}
           />
           <Button
