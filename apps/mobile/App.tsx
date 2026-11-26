@@ -56,7 +56,9 @@ export default function App() {
   useEffect(() => {
     void openStaffQueue()
       .then(setDb)
-      .catch(() => setMessage('Cannot open local storage'));
+      .catch((error: unknown) =>
+        setMessage(error instanceof Error ? error.message : 'Cannot open encrypted local storage'),
+      );
   }, []);
   async function refresh(database: SQLiteDatabase, actor: string) {
     setPending((await listStaffPending(database, actor)).length);

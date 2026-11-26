@@ -1,6 +1,10 @@
 import * as SQLite from 'expo-sqlite';
 import * as Crypto from 'expo-crypto';
+import * as SecureStore from 'expo-secure-store';
+import { File } from 'expo-file-system';
 import { fetchWithTimeout } from './network';
+import { importLegacyRows, validateStoredQueueKey } from './queue-security';
+import type { QueueRow } from './queue-security';
 export type StaffReading = {
   id: string;
   loadId: string;
@@ -11,16 +15,107 @@ export type StaffReading = {
   occurredAt: string;
 };
 export class SessionInvalidError extends Error {}
-export async function openStaffQueue() {
-  const db = await SQLite.openDatabaseAsync('dalumaga-staff-queue.db');
-  await db.execAsync(`PRAGMA journal_mode=WAL;
+const LEGACY_DB = 'dalumaga-staff-queue.db';
+const ENCRYPTED_DB = 'dalumaga-staff-queue-encrypted.db';
+const KEY_NAME = 'dalumaga.staff-queue-key.v1';
+const CREATED_NAME = 'dalumaga.staff-queue-created.v1';
+const secureOptions: SecureStore.SecureStoreOptions = {
+  keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY,
+};
+const pathFor = (name: string) => {
+  const directory = SQLite.defaultDatabaseDirectory as string;
+  const path = `${directory}/${name}`;
+  return path.startsWith('file://') ? path : `file://${path}`;
+};
+const exists = (name: string) => new File(pathFor(name)).exists;
+const readRows = (db: SQLite.SQLiteDatabase) =>
+  db.getAllAsync<QueueRow>(
+    'SELECT id,actor_id,load_id,stage,payload,state FROM events ORDER BY id',
+  );
+let opening: Promise<SQLite.SQLiteDatabase> | undefined;
+export function openStaffQueue(): Promise<SQLite.SQLiteDatabase> {
+  if (!opening) {
+    opening = openEncryptedStaffQueue().catch((error: unknown) => {
+      opening = undefined;
+      throw error;
+    });
+  }
+  return opening;
+}
+async function openEncryptedStaffQueue() {
+  const hasEncrypted = await exists(ENCRYPTED_DB);
+  let key = validateStoredQueueKey(
+    await SecureStore.getItemAsync(KEY_NAME, secureOptions),
+    hasEncrypted,
+    (await SecureStore.getItemAsync(CREATED_NAME, secureOptions)) === 'yes',
+  );
+  if (!key) {
+    const bytes = await Crypto.getRandomBytesAsync(32);
+    key = Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('');
+    await SecureStore.setItemAsync(KEY_NAME, key, secureOptions);
+  }
+  const db = await SQLite.openDatabaseAsync(ENCRYPTED_DB, { useNewConnection: true });
+  try {
+    await SecureStore.setItemAsync(CREATED_NAME, 'yes', secureOptions);
+    const cipher = await db.getFirstAsync<{ cipher_version: string }>('PRAGMA cipher_version');
+    if (!cipher?.cipher_version)
+      throw new Error(
+        'Encrypted storage requires the SQLCipher Android development build; Expo Go is not supported.',
+      );
+    await db.execAsync(`PRAGMA key = "x'${key}'";`);
+    await db.getFirstAsync('SELECT count(*) AS count FROM sqlite_master');
+    await db.execAsync(`PRAGMA journal_mode=WAL;
     CREATE TABLE IF NOT EXISTS events (
       id TEXT PRIMARY KEY, actor_id TEXT NOT NULL, load_id TEXT NOT NULL,
       stage TEXT NOT NULL CHECK(stage IN ('pickup','receipt')), payload TEXT NOT NULL,
       state TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','synced','conflict')),
       UNIQUE(actor_id,load_id,stage)
-    );`);
-  return db;
+    );
+    CREATE TABLE IF NOT EXISTS queue_metadata (name TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);`);
+    if (await exists(LEGACY_DB)) {
+      const legacy = await SQLite.openDatabaseAsync(LEGACY_DB, { useNewConnection: true });
+      let rows: QueueRow[];
+      try {
+        rows = await readRows(legacy);
+      } finally {
+        await legacy.closeAsync();
+      }
+      // This database is not exposed to the app until migration completes. Keep the
+      // transaction on the keyed connection: a new SQLite connection has no SQLCipher key.
+      await importLegacyRows(rows, {
+        transaction: (work) => db.withTransactionAsync(work),
+        wasImported: async () =>
+          Boolean(
+            await db.getFirstAsync(
+              "SELECT value FROM queue_metadata WHERE name='legacy_import_v1'",
+            ),
+          ),
+        insert: async (row) => {
+          await db.runAsync(
+            'INSERT INTO events(id,actor_id,load_id,stage,payload,state) VALUES(?,?,?,?,?,?)',
+            row.id,
+            row.actor_id,
+            row.load_id,
+            row.stage,
+            row.payload,
+            row.state,
+          );
+        },
+        list: () => readRows(db),
+        markImported: async () => {
+          await db.runAsync(
+            "INSERT INTO queue_metadata(name,value) VALUES('legacy_import_v1','complete')",
+          );
+        },
+      });
+      // Keep the plaintext source until the encrypted migration has been tested on native devices.
+      // Do not delete or modify it automatically: it is the recovery copy for existing readings.
+    }
+    return db;
+  } catch (error) {
+    await db.closeAsync().catch(() => undefined);
+    throw error;
+  }
 }
 export async function storeStaffReading(
   db: SQLite.SQLiteDatabase,
