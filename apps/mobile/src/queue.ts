@@ -24,6 +24,11 @@ export async function openQueue() {
       synced INTEGER NOT NULL DEFAULT 0 CHECK(synced IN (0, 1)),
       UNIQUE(load_id, stage)
     );
+    CREATE TABLE IF NOT EXISTS weighing_sync_problem (
+      event_id TEXT PRIMARY KEY NOT NULL,
+      code TEXT NOT NULL CHECK(code IN ('conflict', 'rejected')),
+      FOREIGN KEY(event_id) REFERENCES weighing_queue(id)
+    );
   `);
   return db;
 }
@@ -55,6 +60,14 @@ export async function saveWeighing(
 
 export async function pendingWeighings(db: SQLite.SQLiteDatabase): Promise<PendingWeighing[]> {
   return db.getAllAsync<PendingWeighing>(
-    'SELECT id, load_id AS loadId, stage, gross_grams AS grossGrams, tare_grams AS tareGrams, occurred_at AS occurredAt FROM weighing_queue WHERE synced = 0 ORDER BY rowid',
+    'SELECT id, load_id AS loadId, stage, gross_grams AS grossGrams, tare_grams AS tareGrams, occurred_at AS occurredAt FROM weighing_queue WHERE synced = 0 AND NOT EXISTS (SELECT 1 FROM weighing_sync_problem WHERE event_id = weighing_queue.id) ORDER BY rowid',
+  );
+}
+
+export async function syncProblems(
+  db: SQLite.SQLiteDatabase,
+): Promise<{ stage: string; code: string }[]> {
+  return db.getAllAsync(
+    'SELECT q.stage, p.code FROM weighing_sync_problem p JOIN weighing_queue q ON q.id = p.event_id WHERE q.synced = 0 ORDER BY q.rowid',
   );
 }

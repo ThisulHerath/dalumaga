@@ -52,7 +52,8 @@ export class DemoService {
     const url = new URL(process.env.DALUMAGA_DEMO_DATABASE_URL ?? '');
     if (
       !['localhost', '127.0.0.1', '::1'].includes(url.hostname) ||
-      url.pathname !== '/dalumaga_demo'
+      url.pathname !== '/dalumaga_demo' ||
+      url.search !== ''
     )
       throw new ForbiddenException('Sample mode requires the local dalumaga_demo database');
     if (this.db) return this.db;

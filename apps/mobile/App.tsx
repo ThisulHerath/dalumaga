@@ -2,7 +2,7 @@ import { SimulatedScale } from '@dalumaga/shared';
 import { useEffect, useRef, useState } from 'react';
 import { AppState, Button, ScrollView, Text } from 'react-native';
 import type { SQLiteDatabase } from 'expo-sqlite';
-import { openQueue, pendingWeighings, saveWeighing } from './src/queue';
+import { openQueue, pendingWeighings, saveWeighing, syncProblems } from './src/queue';
 import { syncQueue } from './src/sync';
 const LOAD = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const API = process.env.EXPO_PUBLIC_API_URL || 'http://10.0.2.2:3000/v1';
@@ -11,11 +11,13 @@ export default function App() {
   const [stage, setStage] = useState<'pickup' | 'receipt'>('pickup');
   const [gross, setGross] = useState<number>();
   const [pending, setPending] = useState(0);
+  const [problems, setProblems] = useState<{ stage: string; code: string }[]>([]);
   const [message, setMessage] = useState('Sample mode / ආදර්ශ දත්ත');
   const [busy, setBusy] = useState(false);
   const syncing = useRef(false);
   async function refresh(database: SQLiteDatabase) {
     setPending((await pendingWeighings(database)).length);
+    setProblems(await syncProblems(database));
   }
   useEffect(() => {
     let current: SQLiteDatabase | undefined;
@@ -78,7 +80,7 @@ export default function App() {
     try {
       await syncQueue(db, API);
       await refresh(db);
-      setMessage('Sync complete / යැවීම අවසන්');
+      setMessage('Sync checked / යැවීම් පරීක්ෂා කළා');
     } catch {
       await refresh(db);
       setMessage('Not synced. Retry when connected.');
@@ -122,6 +124,18 @@ export default function App() {
       <Text>
         {pending} pending / යැවීමට {pending}ක්
       </Text>
+      {problems.length > 0 && (
+        <Text accessibilityLiveRegion="polite">
+          Needs attention / පරීක්ෂා කළ යුතුයි: {problems.length}
+          {'\n'}
+          {problems
+            .map(
+              (problem) =>
+                `${problem.stage}: ${problem.code === 'conflict' ? 'Reading conflict / බර සටහන නොගැළපේ' : 'Reading rejected / බර සටහන පිළිගත්තේ නැත'}`,
+            )
+            .join('\n')}
+        </Text>
+      )}
       <Button title="Sync / යවන්න" disabled={!db || busy} onPress={() => void sync()} />
       <Text accessibilityLiveRegion="polite">{message}</Text>
     </ScrollView>

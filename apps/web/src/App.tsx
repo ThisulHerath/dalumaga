@@ -16,6 +16,7 @@ export function App() {
       setData((await response.json()) as Comparison);
       setStatus('Sample data / ආදර්ශ දත්ත');
     } catch {
+      setData(undefined);
       setStatus('Could not load. Check the local demo API.');
     }
   }
@@ -25,6 +26,7 @@ export function App() {
       if (!response.ok) throw new Error('Setup failed');
       await load();
     } catch {
+      setData(undefined);
       setStatus('Sample setup failed. Check the local demo API.');
     }
   }
