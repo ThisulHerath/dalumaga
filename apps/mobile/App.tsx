@@ -10,7 +10,14 @@ import {
   syncStaff,
 } from './src/staff-queue';
 type Identity = { id: string; displayName: string; roles: string[] };
-type Load = { loadId: string; crateCode: string; tareId: string; tareKg: string; scaleId: string };
+type Load = {
+  loadId: string;
+  crateCode: string;
+  tareId: string;
+  tareKg: string;
+  scaleId: string;
+  recorded: boolean;
+};
 const API = process.env.EXPO_PUBLIC_API_URL || 'http://10.0.2.2:3000/v1';
 export default function App() {
   const [db, setDb] = useState<SQLiteDatabase>();
@@ -57,7 +64,7 @@ export default function App() {
       setUser(session.user);
       setToken(session.token);
       setLoads(list);
-      setSelected(list[0]);
+      setSelected(list.find((load) => !load.recorded));
       await refresh(db, session.user.id);
       setMessage('');
     } catch (error) {
@@ -120,6 +127,12 @@ export default function App() {
         scaleId: selected.scaleId,
       });
       await refresh(db, user.id);
+      setLoads((current) =>
+        current.map((load) =>
+          load.loadId === selected.loadId ? { ...load, recorded: true } : load,
+        ),
+      );
+      setSelected(undefined);
       setGross(undefined);
       setMessage('Saved on phone / දුරකථනයේ සුරැකිණි');
     } catch {
@@ -153,6 +166,7 @@ export default function App() {
           <Text style={{ fontSize: 22 }}>Staff sign in / සේවක පිවිසුම</Text>
           <Text>Username / පරිශීලක නාමය</Text>
           <TextInput
+            accessibilityLabel="Username / පරිශීලක නාමය"
             value={username}
             onChangeText={setUsername}
             autoCapitalize="none"
@@ -161,6 +175,7 @@ export default function App() {
           />
           <Text>Password / මුරපදය</Text>
           <TextInput
+            accessibilityLabel="Password / මුරපදය"
             value={password}
             onChangeText={setPassword}
             secureTextEntry
@@ -184,7 +199,12 @@ export default function App() {
             loads.map((load) => (
               <Button
                 key={load.loadId}
-                title={(load.loadId === selected?.loadId ? '✓ ' : '') + load.crateCode}
+                title={
+                  (load.loadId === selected?.loadId ? '✓ ' : '') +
+                  load.crateCode +
+                  (load.recorded ? ' · recorded' : '')
+                }
+                disabled={load.recorded}
                 onPress={() => {
                   setSelected(load);
                   setGross(undefined);

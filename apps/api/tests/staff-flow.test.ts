@@ -132,6 +132,9 @@ test(
       assert.equal((await post(r, 'receipt', 17000, randomUUID())).status, 201);
       assert.equal((await post(w, 'pickup', 20000, id)).status, 201);
       assert.equal((await post(w, 'pickup', 20000, id)).status, 201);
+      assert.equal((await post(w, 'pickup', 21000, id)).status, 409);
+      const unauthenticated = await fetch(url + '/v1/staff/loads');
+      assert.equal(unauthenticated.status, 401);
       const denied = await fetch(url + '/v1/staff/comparisons', {
         headers: { authorization: 'Bearer ' + w },
       });
@@ -141,6 +144,15 @@ test(
       });
       const rows = (await result.json()) as { differenceKg: string }[];
       assert.equal(Number(rows[0]?.differenceKg), -3);
+      const logout = await fetch(url + '/v1/auth/logout', {
+        method: 'POST',
+        headers: { authorization: 'Bearer ' + d },
+      });
+      assert.equal(logout.status, 201);
+      const revoked = await fetch(url + '/v1/staff/comparisons', {
+        headers: { authorization: 'Bearer ' + d },
+      });
+      assert.equal(revoked.status, 401);
       assert.equal(
         Number(
           (

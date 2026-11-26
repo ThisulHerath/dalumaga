@@ -32,14 +32,15 @@ export class StaffWeighingController {
     const db = await this.auth.connectionForStaff();
     return db.query(
       `SELECT l.id AS "loadId", t.id AS "tripId", c.qr_code AS "crateCode",
-       tr.id AS "tareId", tr.empty_kg::text AS "tareKg", tr.scale_id AS "scaleId"
+       tr.id AS "tareId", tr.empty_kg::text AS "tareKg", tr.scale_id AS "scaleId",
+       EXISTS (SELECT 1 FROM dalumaga.weigh_event w WHERE w.load_id=l.id AND w.stage=$2) AS recorded
        FROM dalumaga.crate_load l JOIN dalumaga.batch b ON b.id=l.batch_id
        JOIN dalumaga.trip t ON t.id=b.trip_id
        JOIN dalumaga.trip_assignment a ON a.trip_id=t.id AND a.user_id=$1
        JOIN dalumaga.crate c ON c.id=l.crate_id
        JOIN LATERAL (SELECT * FROM dalumaga.crate_tare WHERE crate_id=c.id AND verified_at<=now()
          AND (valid_until IS NULL OR valid_until>now()) ORDER BY verified_at DESC LIMIT 1) tr ON true`,
-      [user.id],
+      [user.id, user.roles.includes('weigher') ? 'pickup' : 'receipt'],
     );
   }
   @Post('weighings')

@@ -121,22 +121,26 @@ async function main() {
         [i.load, i.batch, i.crate],
       );
       await tx.query('SELECT id FROM dalumaga.trip WHERE id=$1 FOR UPDATE', [i.trip]);
-      const code = 'SAMPLE-C043-' + i.trip;
-      const found = (await tx.query('SELECT id FROM dalumaga.crate WHERE qr_code=$1', [code])) as {
-        id: string;
-      }[];
-      if (!found.length) {
-        const crate = randomUUID();
-        await tx.query('INSERT INTO dalumaga.crate(id,qr_code) VALUES($1,$2)', [crate, code]);
-        await tx.query(
-          "INSERT INTO dalumaga.crate_tare(id,crate_id,empty_kg,verified_at,verified_by,scale_id,condition_note) VALUES($1,$2,2,'2020-01-01',$3,$4,'simulator sample')",
-          [randomUUID(), crate, w.id, i.scale],
-        );
-        await tx.query('INSERT INTO dalumaga.crate_load(id,batch_id,crate_id) VALUES($1,$2,$3)', [
-          randomUUID(),
-          i.batch,
-          crate,
-        ]);
+      for (const number of ['C043', 'C044']) {
+        const code = 'SAMPLE-' + number + '-' + i.trip;
+        const found = (await tx.query('SELECT id FROM dalumaga.crate WHERE qr_code=$1', [
+          code,
+        ])) as {
+          id: string;
+        }[];
+        if (!found.length) {
+          const crate = randomUUID();
+          await tx.query('INSERT INTO dalumaga.crate(id,qr_code) VALUES($1,$2)', [crate, code]);
+          await tx.query(
+            "INSERT INTO dalumaga.crate_tare(id,crate_id,empty_kg,verified_at,verified_by,scale_id,condition_note) VALUES($1,$2,2,'2020-01-01',$3,$4,'simulator sample')",
+            [randomUUID(), crate, w.id, i.scale],
+          );
+          await tx.query('INSERT INTO dalumaga.crate_load(id,batch_id,crate_id) VALUES($1,$2,$3)', [
+            randomUUID(),
+            i.batch,
+            crate,
+          ]);
+        }
       }
       for (const a of accounts)
         await tx.query(
