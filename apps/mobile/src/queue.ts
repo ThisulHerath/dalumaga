@@ -11,7 +11,7 @@ export type PendingWeighing = {
 };
 
 export async function openQueue() {
-  const db = await SQLite.openDatabaseAsync('dalumaga-queue.db');
+  const db = await SQLite.openDatabaseAsync('dalumaga-demo-queue.db');
   await db.execAsync(`
     PRAGMA journal_mode = WAL;
     CREATE TABLE IF NOT EXISTS weighing_queue (
