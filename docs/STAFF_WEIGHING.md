@@ -41,3 +41,11 @@ corepack.cmd pnpm db:status
 
 This changes the configured development database. Confirm `apps/api/.env` points to the intended database first. Previously signed-in mobile sessions must sign in again to enroll their device.
 
+
+## Scan a crate (simulator)
+
+The QR label contains the exact registered crate code, such as `C044`. Sign in online and download assigned crates first. Tap **Scan crate QR**, allow camera access and point the phone at the label. The selected code appears before weighing. If camera access is unavailable, type the exact code or choose a crate from the assigned list. Unknown, already recorded and ambiguous codes are rejected. Crate codes are case-sensitive. If the same crate appears in multiple assigned loads, ask the office to resolve it before recording; the app must not guess which load is intended. QR label content and this ambiguity policy are assumptions to verify with the factory.
+
+The camera needs a physical device or an emulator configured with a camera image. With Expo Go, camera support is supplied by the installed Expo Go client; native builds also require the camera permission configured in app.json. Restart Metro after installing dependencies. Test denial of camera permission and the typed-code fallback as well as a successful scan.
+
+This workflow remains a simulator. Its SQLite queue is not encrypted; do not use real employee or factory data. Encrypting the existing queue requires a tested migration and a native build with an appropriate key management and recovery plan; enabling an encryption setting alone would not protect existing records.

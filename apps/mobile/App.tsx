@@ -1,6 +1,7 @@
 import { SimulatedScale } from '@dalumaga/shared';
 import { useEffect, useRef, useState } from 'react';
-import { AppState, Button, ScrollView, Text, TextInput } from 'react-native';
+import { AppState, Button, ScrollView, Text, TextInput, View } from 'react-native';
+import { CameraView, useCameraPermissions } from 'expo-camera';
 import type { SQLiteDatabase } from 'expo-sqlite';
 import {
   listStaffPending,
@@ -19,6 +20,7 @@ import {
 } from './src/staff-device';
 import type { DeviceIdentity } from './src/staff-device';
 import { fetchWithTimeout } from './src/network';
+import { matchCrate } from './src/crate-match';
 type Identity = { id: string; displayName: string; roles: string[] };
 type Load = {
   loadId: string;
@@ -45,6 +47,10 @@ export default function App() {
     [problems, setProblems] = useState(0);
   const [message, setMessage] = useState(''),
     [busy, setBusy] = useState(false);
+  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
+  const [scanning, setScanning] = useState(false);
+  const [crateInput, setCrateInput] = useState('');
+  const scanHandled = useRef(false);
   const syncing = useRef(false);
   useEffect(() => {
     void openStaffQueue()
@@ -101,7 +107,7 @@ export default function App() {
       setExpiresAt(session.expiresAt);
       setCaptureUnlocked(true);
       setLoads(list);
-      setSelected(list.find((load) => !load.recorded));
+      setSelected(undefined);
       await refresh(db, session.user.id);
       setMessage('');
     } catch (error) {
@@ -247,7 +253,7 @@ export default function App() {
       setExpiresAt(saved.expiresAt);
       setCaptureUnlocked(false);
       setLoads(available);
-      setSelected(available.find((load) => !load.recorded));
+      setSelected(undefined);
       await refresh(db, saved.user.id);
       setMessage('Saved session unlocked. Reconnect to verify before recording new weights.');
     } catch (error) {
@@ -255,6 +261,37 @@ export default function App() {
     } finally {
       setBusy(false);
     }
+  }
+  function selectCrate(code: string) {
+    setSelected(undefined);
+    setGross(undefined);
+    const match = matchCrate(code, loads);
+    if (match.kind === 'match') {
+      setSelected(match.load);
+      setCrateInput(match.load.crateCode);
+      setMessage('Crate selected / පෙට්ටිය තෝරා ඇත');
+      return;
+    }
+    const messages = {
+      empty: 'Enter a crate code / පෙට්ටි අංකය ඇතුළත් කරන්න',
+      'not-found': 'Crate is not assigned / මෙම පෙට්ටිය පවරා නැත',
+      recorded: 'Crate already recorded / පෙට්ටියේ බර දැනටමත් සටහන් කර ඇත',
+      ambiguous: 'Code matches multiple loads. Contact the office / කාර්යාලය අමතන්න',
+    };
+    setMessage(messages[match.kind]);
+  }
+  async function openScanner() {
+    const permission = cameraPermission?.granted
+      ? cameraPermission
+      : await requestCameraPermission();
+    if (!permission.granted) {
+      setMessage(
+        'Camera access denied. Enter the crate code below / කැමරාව වෙනුවට අංකය ඇතුළත් කරන්න',
+      );
+      return;
+    }
+    scanHandled.current = false;
+    setScanning(true);
   }
   return (
     <ScrollView
@@ -299,9 +336,53 @@ export default function App() {
           </Text>
           <Text>SIMULATED SCALE / ආදර්ශ තරාදිය</Text>
           <Text>Device / උපකරණය: {device?.id.slice(-8)}</Text>
+          <Text
+            style={{ fontSize: 18, fontWeight: '700', color: '#175a39' }}
+            accessibilityLiveRegion="polite"
+          >
+            {pending} pending / යැවීමට {pending}ක් · {problems} need attention / ගැටලු {problems}
+          </Text>
           {!captureUnlocked && (
             <Text>Reconnect to verify before recording / බර සටහන් කිරීමට නැවත සම්බන්ධ වන්න</Text>
           )}
+          <Text style={{ fontSize: 20, fontWeight: '700' }}>
+            1. Choose a crate / පෙට්ටිය තෝරන්න
+          </Text>
+          <Button
+            title="Scan crate QR / පෙට්ටියේ QR කේතය කියවන්න"
+            disabled={busy || scanning}
+            onPress={() => void openScanner()}
+          />
+          {scanning && (
+            <View>
+              <Text>Point the camera at the crate label / කැමරාව පෙට්ටියේ කේතය වෙත යොමු කරන්න</Text>
+              <CameraView
+                style={{ height: 280, width: '100%' }}
+                barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
+                onBarcodeScanned={({ data }) => {
+                  if (scanHandled.current) return;
+                  scanHandled.current = true;
+                  setScanning(false);
+                  selectCrate(data);
+                }}
+              />
+              <Button title="Cancel scan / අවලංගු කරන්න" onPress={() => setScanning(false)} />
+            </View>
+          )}
+          <Text>Or enter crate code / හෝ පෙට්ටි අංකය ඇතුළත් කරන්න</Text>
+          <TextInput
+            accessibilityLabel="Crate code / පෙට්ටි අංකය"
+            value={crateInput}
+            onChangeText={setCrateInput}
+            autoCapitalize="characters"
+            style={{ borderWidth: 1, padding: 12, minHeight: 48 }}
+          />
+          <Button
+            title="Find crate / පෙට්ටිය සොයන්න"
+            disabled={busy}
+            onPress={() => selectCrate(crateInput)}
+          />
+          <Text>Or choose from assigned crates / හෝ පවරා ඇති පෙට්ටියක් තෝරන්න</Text>
           {loads.length === 0 ? (
             <Text>No assigned crates / පැවරූ පෙට්ටි නැත</Text>
           ) : (
@@ -314,13 +395,16 @@ export default function App() {
                   (load.recorded ? ' · recorded' : '')
                 }
                 disabled={load.recorded}
-                onPress={() => {
-                  setSelected(load);
-                  setGross(undefined);
-                }}
+                onPress={() => selectCrate(load.crateCode)}
               />
             ))
           )}
+          <Text style={{ fontSize: 18, fontWeight: '700' }}>
+            Selected / තෝරාගත් පෙට්ටිය: {selected?.crateCode ?? '—'}
+          </Text>
+          <Text style={{ fontSize: 20, fontWeight: '700' }}>
+            2. Read and check / බර කියවා පරීක්ෂා කරන්න
+          </Text>
           <Button
             title="Read simulated scale / තරාදිය කියවන්න"
             disabled={!selected || busy || !captureUnlocked}
@@ -337,12 +421,9 @@ export default function App() {
           </Text>
           <Button
             title="Save weight / බර සුරකින්න"
-            disabled={gross === undefined || busy}
+            disabled={gross === undefined || busy || !captureUnlocked}
             onPress={() => void save()}
           />
-          <Text>
-            {pending} pending / යැවීමට {pending}ක් · {problems} need attention
-          </Text>
           <Button title="Sync / යවන්න" disabled={busy} onPress={() => void sync()} />
           <Button
             title="Enable saved-session unlock / සුරැකි ගිණුම විවෘත කිරීම"

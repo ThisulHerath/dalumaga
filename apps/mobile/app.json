@@ -11,6 +11,15 @@
     "ios": {
       "bundleIdentifier": "lk.dalumaga.field"
     },
-    "plugins": ["expo-secure-store"]
+    "plugins": [
+      "expo-secure-store",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow DaluMaga to scan crate QR labels.",
+          "recordAudioAndroid": false
+        }
+      ]
+    ]
   }
 }
