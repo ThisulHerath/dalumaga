@@ -28,6 +28,38 @@ export function assertQueueCopyMatches(original: QueueRow[], copy: QueueRow[]): 
     throw new Error('Queue migration verification failed. The original has been retained.');
 }
 
+// Evidence only: a clean comparison does not authorize deletion of the recovery copy.
+export function compareLegacyEvidence(original: QueueRow[], encrypted: QueueRow[]) {
+  const byId = new Map<string, QueueRow>();
+  let duplicateIds = 0;
+  for (const row of encrypted) {
+    if (byId.has(row.id)) duplicateIds++;
+    else byId.set(row.id, row);
+  }
+  const seen = new Set<string>();
+  let missing = 0;
+  let changed = 0;
+  let notSynced = 0;
+  for (const old of original) {
+    if (seen.has(old.id)) duplicateIds++;
+    seen.add(old.id);
+    const current = byId.get(old.id);
+    if (!current) {
+      missing++;
+      continue;
+    }
+    if (
+      old.actor_id !== current.actor_id ||
+      old.load_id !== current.load_id ||
+      old.stage !== current.stage ||
+      old.payload !== current.payload
+    )
+      changed++;
+    if (current.state !== 'synced') notSynced++;
+  }
+  return { total: original.length, missing, changed, notSynced, duplicateIds };
+}
+
 export type MigrationStore = {
   transaction: (work: () => Promise<void>) => Promise<void>;
   wasImported: () => Promise<boolean>;

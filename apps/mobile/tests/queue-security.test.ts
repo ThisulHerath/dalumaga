@@ -3,6 +3,7 @@ import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import {
   assertQueueCopyMatches,
+  compareLegacyEvidence,
   importLegacyRows,
   validateStoredQueueKey,
 } from '../src/queue-security';
@@ -29,6 +30,19 @@ test('migration verification catches missing, changed or duplicated events', () 
   assert.throws(() => assertQueueCopyMatches([row], []), /retained/);
   assert.throws(() => assertQueueCopyMatches([row], [{ ...row, state: 'synced' }]), /retained/);
   assert.throws(() => assertQueueCopyMatches([row], [row, row]), /retained/);
+});
+
+test('cleanup evidence detects missing, altered, unsynced and duplicate records', () => {
+  const clean = { total: 1, missing: 0, changed: 0, notSynced: 0, duplicateIds: 0 };
+  const synced = { ...row, state: 'synced' as const };
+  assert.deepEqual(compareLegacyEvidence([row], [synced]), clean);
+  assert.equal(compareLegacyEvidence([row], []).missing, 1);
+  assert.equal(compareLegacyEvidence([row], [{ ...synced, payload: 'changed' }]).changed, 1);
+  assert.equal(compareLegacyEvidence([row], [{ ...synced, actor_id: 'another' }]).changed, 1);
+  assert.equal(compareLegacyEvidence([row], [row]).notSynced, 1);
+  assert.equal(compareLegacyEvidence([row], [{ ...row, state: 'conflict' }]).notSynced, 1);
+  assert.equal(compareLegacyEvidence([row, row], [synced]).duplicateIds, 1);
+  assert.equal(compareLegacyEvidence([row], [synced, synced]).duplicateIds, 1);
 });
 
 test('an interrupted import rolls back and retry keeps every original event once', async () => {
