@@ -20,6 +20,24 @@ Open http://localhost:5174 to sign in as dispatcher. Use an Android emulator wit
 3. On a second signed-in session, receive the same crate as the receiver and sync it.
 4. Reconnect the first emulator and sync. The dispatcher can refresh the office screen to see the difference.
 
-Sessions last 12 hours. A user signs in online and may then capture offline. If the app process closes, the queued events remain on the device, but the user must reconnect and sign in again to load their assignment and sync them. Sign-out while offline clears the local session but cannot revoke the server session until it expires.
+Sessions last 12 hours. After online sign-in and verification, a user can capture while the app remains active without connectivity. Queued events remain on the device after the app closes. Sign-out while offline clears the local session but cannot revoke the server session until it expires.
 
 For real factory use, add secure device enrollment, protected offline access and retention, audited account provisioning and recovery, HTTPS for deployed clients, operational monitoring, independently verified hardware, and a security review. Do not use the simulated flow for employee or factory data.
+
+## Device enrollment and recovery
+
+Signing in on mobile enrolls an installation for that staff account. Its randomly generated device secret is stored with Expo SecureStore. The office page lists devices belonging to the signed-in account; match the device using the eight-character identifier shown on the phone. Select Revoke for a lost device. Revocation stops that device's server access and is checked when it next connects. Sign in from another device to regain access. Password reset and administrative account recovery are not yet implemented.
+
+A staff user may opt in to **Enable saved-session unlock** on a device with supported and configured biometrics. The cached session is protected by the device's biometric authentication. After restarting the app, **Unlock saved session** can show saved assignments and pending work, but recording another weight requires reconnecting and verifying the account and device. A single saved session is kept per installation; enabling it for another user replaces the saved session. Confirm shared-device procedures with the factory before a pilot.
+
+Queued readings are stored in local SQLite and remain there when signing out. They are currently **not encrypted**. Biometrics identify an enrolled device user, not a particular employee. The phone clock can be changed and offline revocation cannot be delivered until connectivity returns. These limitations prevent safe use with real staff or factory data. Secure offline storage, reliable offline session expiry, a shared-device policy, password recovery, HTTPS, independently verified hardware and a further security review are required before field use.
+
+Apply migrations before starting the updated API:
+
+```powershell
+corepack.cmd pnpm db:migrate
+corepack.cmd pnpm db:status
+```
+
+This changes the configured development database. Confirm `apps/api/.env` points to the intended database first. Previously signed-in mobile sessions must sign in again to enroll their device.
+

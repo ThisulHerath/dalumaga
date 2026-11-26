@@ -1,6 +1,6 @@
 import { randomBytes, scrypt as scryptCallback, timingSafeEqual, createHash } from 'node:crypto';
 import { promisify } from 'node:util';
-import { DataSource } from 'typeorm';
+import { DataSource, type EntityManager } from 'typeorm';
 import { ForbiddenException, HttpException, UnauthorizedException } from '@nestjs/common';
 
 const scrypt = promisify(scryptCallback);
@@ -43,7 +43,37 @@ export class StaffAuth {
   async connectionForStaff(): Promise<DataSource> {
     return this.database();
   }
-  async login(username: string, password: string): Promise<{ token: string; user: StaffIdentity }> {
+  async lockDeviceSession(
+    tx: EntityManager,
+    header: string | undefined,
+    secret: string | undefined,
+    userId: string,
+    role: string,
+  ): Promise<void> {
+    const token = header?.match(/^Bearer ([A-Za-z0-9_-]{43})$/)?.[1];
+    if (!token || !secret || !/^[a-f0-9]{64}$/.test(secret))
+      throw new UnauthorizedException('Device authentication required');
+    const sessions = (await tx.query(
+      'SELECT device_id FROM dalumaga.staff_session WHERE token_hash=$1 AND user_id=$2',
+      [tokenHash(token), userId],
+    )) as { device_id: string | null }[];
+    const deviceId = sessions[0]?.device_id;
+    if (!deviceId) throw new UnauthorizedException('Device authentication required');
+    const devices = (await tx.query(
+      'SELECT id FROM dalumaga.staff_device WHERE id=$1 AND user_id=$2 AND secret_hash=$3 AND revoked_at IS NULL FOR SHARE',
+      [deviceId, userId, tokenHash(secret)],
+    )) as unknown[];
+    if (!devices.length) throw new UnauthorizedException('Device revoked');
+    const active = (await tx.query(
+      'SELECT s.token_hash FROM dalumaga.staff_session s JOIN dalumaga.app_user u ON u.id=s.user_id JOIN dalumaga.user_role r ON r.user_id=u.id WHERE s.token_hash=$1 AND s.user_id=$2 AND s.device_id=$3 AND s.revoked_at IS NULL AND s.expires_at>now() AND u.enabled AND r.role_code=$4 FOR SHARE OF s,u,r',
+      [tokenHash(token), userId, deviceId, role],
+    )) as unknown[];
+    if (!active.length) throw new UnauthorizedException('Session expired or permission changed');
+  }
+  async login(
+    username: string,
+    password: string,
+  ): Promise<{ token: string; user: StaffIdentity; expiresAt: string }> {
     if (username.length > 128 || password.length > 256 || !username.trim() || !password)
       throw new UnauthorizedException('Invalid credentials');
     const db = await this.database();
@@ -82,37 +112,118 @@ export class StaffAuth {
         [row.user_id],
       );
       const token = randomBytes(32).toString('base64url');
-      await tx.query(
-        "INSERT INTO dalumaga.staff_session(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '12 hours')",
+      const sessions = (await tx.query(
+        "INSERT INTO dalumaga.staff_session(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '12 hours') RETURNING expires_at",
         [tokenHash(token), row.user_id],
-      );
-      return { token, id: row.user_id };
+      )) as { expires_at: Date }[];
+      return { token, expiresAt: sessions[0]!.expires_at.toISOString() };
     });
     if (!result) throw new UnauthorizedException('Invalid credentials');
-    return { token: result.token, user: await this.authorize('Bearer ' + result.token) };
+    return {
+      token: result.token,
+      user: await this.authorize('Bearer ' + result.token),
+      expiresAt: result.expiresAt,
+    };
   }
-  async authorize(header: string | undefined, allowed?: readonly string[]): Promise<StaffIdentity> {
+  async authorize(
+    header: string | undefined,
+    allowed?: readonly string[],
+    deviceSecret?: string,
+    requireDevice = false,
+  ): Promise<StaffIdentity> {
     const token = header?.match(/^Bearer ([A-Za-z0-9_-]{43})$/)?.[1];
     if (!token) throw new UnauthorizedException('Sign in required');
     const db = await this.database();
     const rows = (await db.query(
-      "SELECT u.id,u.display_name,coalesce(array_agg(r.role_code) FILTER (WHERE r.role_code IS NOT NULL),'{}') AS roles FROM dalumaga.staff_session s JOIN dalumaga.app_user u ON u.id=s.user_id LEFT JOIN dalumaga.user_role r ON r.user_id=u.id WHERE s.token_hash=$1 AND s.expires_at>now() AND s.revoked_at IS NULL AND u.enabled GROUP BY u.id",
+      "SELECT u.id,u.display_name,s.device_id,d.secret_hash,coalesce(array_agg(r.role_code) FILTER (WHERE r.role_code IS NOT NULL),'{}') AS roles FROM dalumaga.staff_session s JOIN dalumaga.app_user u ON u.id=s.user_id LEFT JOIN dalumaga.user_role r ON r.user_id=u.id LEFT JOIN dalumaga.staff_device d ON d.id=s.device_id WHERE s.token_hash=$1 AND s.expires_at>now() AND s.revoked_at IS NULL AND u.enabled AND (s.device_id IS NULL OR (d.user_id=u.id AND d.revoked_at IS NULL)) GROUP BY u.id,s.device_id,d.secret_hash",
       [tokenHash(token)],
-    )) as { id: string; display_name: string; roles: string[] }[];
+    )) as {
+      id: string;
+      display_name: string;
+      roles: string[];
+      device_id: string | null;
+      secret_hash: string | null;
+    }[];
     const user = rows[0];
     if (!user || !user.roles.length) throw new UnauthorizedException('Session expired');
+    if (requireDevice || user.device_id) {
+      if (
+        !deviceSecret ||
+        !/^[a-f0-9]{64}$/.test(deviceSecret) ||
+        !user.secret_hash ||
+        !timingSafeEqual(
+          Buffer.from(tokenHash(deviceSecret), 'hex'),
+          Buffer.from(user.secret_hash, 'hex'),
+        )
+      ) {
+        throw new UnauthorizedException('Device authentication required');
+      }
+    }
     if (allowed && !user.roles.some((role) => allowed.includes(role)))
       throw new ForbiddenException('Role is not permitted');
     return { id: user.id, displayName: user.display_name, roles: user.roles };
   }
-  async logout(header: string | undefined): Promise<void> {
-    await this.authorize(header);
+  async logout(header: string | undefined, deviceSecret?: string): Promise<void> {
+    await this.authorize(header, undefined, deviceSecret);
     const token = header!.slice(7);
     const db = await this.database();
     await db.query(
       'UPDATE dalumaga.staff_session SET revoked_at=now() WHERE token_hash=$1 AND revoked_at IS NULL',
       [tokenHash(token)],
     );
+  }
+  async enroll(
+    header: string | undefined,
+    id: string,
+    label: string,
+    secret: string,
+  ): Promise<void> {
+    const user = await this.authorize(header, undefined, secret);
+    const token = header!.slice(7);
+    const db = await this.database();
+    await db.transaction(async (tx) => {
+      await tx.query(
+        'INSERT INTO dalumaga.staff_device(id,user_id,label,secret_hash) VALUES($1,$2,$3,$4) ON CONFLICT(id) DO NOTHING',
+        [id, user.id, label, tokenHash(secret)],
+      );
+      await tx.query('SELECT id FROM dalumaga.staff_device WHERE id=$1 FOR UPDATE', [id]);
+      const updated = (await tx.query(
+        'WITH changed AS (UPDATE dalumaga.staff_session s SET device_id=$1 FROM dalumaga.staff_device d WHERE s.token_hash=$2 AND s.user_id=$3 AND s.revoked_at IS NULL AND s.expires_at>now() AND (s.device_id IS NULL OR s.device_id=d.id) AND d.id=$1 AND d.user_id=$3 AND d.revoked_at IS NULL AND d.secret_hash=$4 RETURNING s.device_id) SELECT * FROM changed',
+        [id, tokenHash(token), user.id, tokenHash(secret)],
+      )) as unknown[];
+      if (!updated.length) throw new ForbiddenException('Device cannot be enrolled');
+      await tx.query(
+        "INSERT INTO dalumaga.audit_log(actor_id,action,entity_type,entity_id,detail) VALUES($1,'enroll','staff_device',$2,'{}')",
+        [user.id, id],
+      );
+    });
+  }
+  async devices(header: string | undefined) {
+    const user = await this.authorize(header);
+    const db = await this.database();
+    return db.query(
+      'SELECT id,label,enrolled_at AS "enrolledAt",revoked_at AS "revokedAt" FROM dalumaga.staff_device WHERE user_id=$1 ORDER BY enrolled_at DESC',
+      [user.id],
+    );
+  }
+  async revokeDevice(header: string | undefined, id: string): Promise<void> {
+    const user = await this.authorize(header);
+    const db = await this.database();
+    await db.transaction(async (tx) => {
+      const rows = (await tx.query(
+        'WITH changed AS (UPDATE dalumaga.staff_device SET revoked_at=COALESCE(revoked_at,now()) WHERE id=$1 AND user_id=$2 RETURNING id) SELECT * FROM changed',
+        [id, user.id],
+      )) as unknown[];
+      if (!rows.length) throw new ForbiddenException('Device is not available');
+      await tx.query(
+        'UPDATE dalumaga.staff_session SET revoked_at=COALESCE(revoked_at,now()) WHERE device_id=$1 AND user_id=$2',
+        [id, user.id],
+      );
+      await tx.query(
+        "INSERT INTO dalumaga.audit_log(actor_id,action,entity_type,entity_id,detail) VALUES($1,'revoke','staff_device',$2,'{}')",
+        [user.id, id],
+      );
+    });
   }
   async onModuleDestroy(): Promise<void> {
     if (this.db?.isInitialized) await this.db.destroy();

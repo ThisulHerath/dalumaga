@@ -1,5 +1,6 @@
 import * as SQLite from 'expo-sqlite';
 import * as Crypto from 'expo-crypto';
+import { fetchWithTimeout } from './network';
 export type StaffReading = {
   id: string;
   loadId: string;
@@ -9,6 +10,7 @@ export type StaffReading = {
   scaleId: string;
   occurredAt: string;
 };
+export class SessionInvalidError extends Error {}
 export async function openStaffQueue() {
   const db = await SQLite.openDatabaseAsync('dalumaga-staff-queue.db');
   await db.execAsync(`PRAGMA journal_mode=WAL;
@@ -50,16 +52,28 @@ export async function staffIssues(db: SQLite.SQLiteDatabase, actorId: string) {
     actorId,
   );
 }
+export async function recordedLoads(db: SQLite.SQLiteDatabase, actorId: string): Promise<string[]> {
+  const rows = await db.getAllAsync<{ load_id: string }>(
+    'SELECT load_id FROM events WHERE actor_id=?',
+    actorId,
+  );
+  return rows.map((row) => row.load_id);
+}
 export async function syncStaff(
   db: SQLite.SQLiteDatabase,
   actorId: string,
   token: string,
+  deviceSecret: string,
   base: string,
 ) {
   for (const row of await listStaffPending(db, actorId)) {
-    const response = await fetch(base + '/staff/weighings', {
+    const response = await fetchWithTimeout(base + '/staff/weighings', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token },
+      headers: {
+        'content-type': 'application/json',
+        authorization: 'Bearer ' + token,
+        'x-device-secret': deviceSecret,
+      },
       body: row.payload,
     });
     if (response.status === 409) {
@@ -70,13 +84,10 @@ export async function syncStaff(
       );
       continue;
     }
-    if (!response.ok)
-      throw new Error(
-        response.status === 401
-          ? 'Session expired. Sign in again.'
-          : 'Sync failed. Your reading is saved.',
-      );
-    const data: unknown = await response.json();
+    if (response.status === 401)
+      throw new SessionInvalidError('Session expired or device revoked. Sign in online.');
+    if (!response.ok) throw new Error('Sync failed. Your reading is saved.');
+    const data = response.data;
     if (
       !data ||
       typeof data !== 'object' ||

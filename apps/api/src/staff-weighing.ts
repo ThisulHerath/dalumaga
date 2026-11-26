@@ -27,8 +27,11 @@ const Reading = z
 export class StaffWeighingController {
   constructor(@Inject(StaffAuth) private readonly auth: StaffAuth) {}
   @Get('loads')
-  async loads(@Headers('authorization') header?: string) {
-    const user = await this.auth.authorize(header, ['weigher', 'receiver']);
+  async loads(
+    @Headers('authorization') header?: string,
+    @Headers('x-device-secret') secret?: string,
+  ) {
+    const user = await this.auth.authorize(header, ['weigher', 'receiver'], secret, true);
     const db = await this.auth.connectionForStaff();
     return db.query(
       `SELECT l.id AS "loadId", t.id AS "tripId", c.qr_code AS "crateCode",
@@ -44,16 +47,32 @@ export class StaffWeighingController {
     );
   }
   @Post('weighings')
-  async weigh(@Headers('authorization') header: string | undefined, @Body() body: unknown) {
+  async weigh(
+    @Headers('authorization') header: string | undefined,
+    @Headers('x-device-secret') secret: string | undefined,
+    @Body() body: unknown,
+  ) {
     const parsed = Reading.safeParse(body);
     if (!parsed.success) throw new HttpException('Invalid reading', 400);
     const e = parsed.data;
-    const user = await this.auth.authorize(header, [e.stage === 'pickup' ? 'weigher' : 'receiver']);
+    const user = await this.auth.authorize(
+      header,
+      [e.stage === 'pickup' ? 'weigher' : 'receiver'],
+      secret,
+      true,
+    );
     if (process.env.DALUMAGA_STAFF_SIMULATOR !== 'true' || process.env.NODE_ENV === 'production')
       throw new ForbiddenException('Simulator is not enabled');
     const db = await this.auth.connectionForStaff();
     try {
       await db.transaction(async (tx) => {
+        await this.auth.lockDeviceSession(
+          tx,
+          header,
+          secret,
+          user.id,
+          e.stage === 'pickup' ? 'weigher' : 'receiver',
+        );
         const allowed = (await tx.query(
           `SELECT 1 FROM dalumaga.crate_load l
           JOIN dalumaga.batch b ON b.id=l.batch_id
@@ -91,8 +110,11 @@ export class StaffWeighingController {
     return { id: e.id, accepted: true };
   }
   @Get('comparisons')
-  async comparisons(@Headers('authorization') header?: string) {
-    const user = await this.auth.authorize(header, ['dispatcher']);
+  async comparisons(
+    @Headers('authorization') header?: string,
+    @Headers('x-device-secret') secret?: string,
+  ) {
+    const user = await this.auth.authorize(header, ['dispatcher'], secret);
     const db = await this.auth.connectionForStaff();
     return db.query(
       `SELECT d.load_id AS "loadId", c.qr_code AS "crateCode", d.pickup_kg::text AS "pickupKg",

@@ -1,4 +1,14 @@
-import { Body, Controller, Headers, Inject, Post, Get } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Headers,
+  Inject,
+  Post,
+  Get,
+  Param,
+  BadRequestException,
+} from '@nestjs/common';
+import { z } from 'zod';
 import { StaffAuth, validateLogin } from './staff-auth';
 @Controller('auth')
 export class StaffAuthController {
@@ -7,11 +17,44 @@ export class StaffAuthController {
     const input = validateLogin(body);
     return this.auth.login(input.username, input.password);
   }
-  @Get('me') me(@Headers('authorization') header?: string) {
-    return this.auth.authorize(header);
+  @Get('me') me(
+    @Headers('authorization') header?: string,
+    @Headers('x-device-secret') secret?: string,
+  ) {
+    return this.auth.authorize(header, undefined, secret);
   }
-  @Post('logout') async logout(@Headers('authorization') header?: string) {
-    await this.auth.logout(header);
+  @Post('logout') async logout(
+    @Headers('authorization') header?: string,
+    @Headers('x-device-secret') secret?: string,
+  ) {
+    await this.auth.logout(header, secret);
+    return { success: true };
+  }
+  @Post('devices/enroll') async enroll(
+    @Headers('authorization') header: string | undefined,
+    @Body() body: unknown,
+  ) {
+    const parsed = z
+      .object({
+        id: z.string().uuid(),
+        label: z.string().trim().min(1).max(80),
+        secret: z.string().regex(/^[a-f0-9]{64}$/),
+      })
+      .strict()
+      .safeParse(body);
+    if (!parsed.success) throw new BadRequestException('Invalid device registration');
+    await this.auth.enroll(header, parsed.data.id, parsed.data.label, parsed.data.secret);
+    return { success: true };
+  }
+  @Get('devices') devices(@Headers('authorization') header?: string) {
+    return this.auth.devices(header);
+  }
+  @Post('devices/:id/revoke') async revoke(
+    @Headers('authorization') header: string | undefined,
+    @Param('id') id: string,
+  ) {
+    if (!z.string().uuid().safeParse(id).success) throw new BadRequestException('Invalid device');
+    await this.auth.revokeDevice(header, id);
     return { success: true };
   }
 }

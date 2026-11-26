@@ -1,5 +1,6 @@
 import { useState } from 'react';
 type Identity = { displayName: string; roles: string[] };
+type Device = { id: string; label: string; enrolledAt: string; revokedAt: string | null };
 type Row = {
   loadId: string;
   crateCode: string;
@@ -14,6 +15,7 @@ export function StaffOffice() {
   const [token, setToken] = useState('');
   const [user, setUser] = useState<Identity>();
   const [rows, setRows] = useState<Row[]>([]);
+  const [devices, setDevices] = useState<Device[] | null>(null);
   const [status, setStatus] = useState('');
   async function signIn(event: React.FormEvent) {
     event.preventDefault();
@@ -26,20 +28,40 @@ export function StaffOffice() {
       if (!response.ok) throw new Error('Sign in failed');
       const session = (await response.json()) as { token: string; user: Identity };
       setPassword('');
-      if (!session.user.roles.includes('dispatcher')) {
-        await fetch(api + '/auth/logout', {
-          method: 'POST',
-          headers: { authorization: 'Bearer ' + session.token },
-        });
-        throw new Error('Dispatcher account required');
-      }
       setToken(session.token);
       setUser(session.user);
       setStatus('');
-      await refresh(session.token);
+      if (session.user.roles.includes('dispatcher')) await refresh(session.token);
+      await loadDevices(session.token);
     } catch (error) {
       setPassword('');
       setStatus(error instanceof Error ? error.message : 'Sign in failed');
+    }
+  }
+  async function loadDevices(currentToken = token) {
+    try {
+      const response = await fetch(api + '/auth/devices', {
+        headers: { authorization: 'Bearer ' + currentToken },
+      });
+      if (!response.ok) throw new Error('Could not load devices.');
+      setDevices((await response.json()) as Device[]);
+    } catch {
+      setDevices(null);
+      setStatus('Could not load devices.');
+    }
+  }
+  async function revokeDevice(id: string) {
+    if (!window.confirm('Revoke this device? / මෙම දුරකථනයේ ප්‍රවේශය නවත්වන්නද?')) return;
+    try {
+      const response = await fetch(api + '/auth/devices/' + id + '/revoke', {
+        method: 'POST',
+        headers: { authorization: 'Bearer ' + token },
+      });
+      if (!response.ok) throw new Error('Could not revoke device.');
+      setStatus('Device revoked. The phone will be rejected when it reconnects.');
+      await loadDevices();
+    } catch {
+      setStatus('Could not revoke device.');
     }
   }
   async function refresh(currentToken = token) {
@@ -70,6 +92,7 @@ export function StaffOffice() {
       setToken('');
       setUser(undefined);
       setRows([]);
+      setDevices(null);
     }
   }
   if (!token)
@@ -101,33 +124,59 @@ export function StaffOffice() {
     );
   return (
     <section>
-      <h2>Deliveries / දළු භාරදීම්</h2>
+      <h2>
+        {user?.roles.includes('dispatcher') ? 'Deliveries / දළු භාරදීම්' : 'My account / මගේ ගිණුම'}
+      </h2>
       <p>{user?.displayName}</p>
-      <button onClick={() => void refresh()}>Refresh / යළි බලන්න</button>
+      {user?.roles.includes('dispatcher') && (
+        <button onClick={() => void refresh()}>Refresh / යළි බලන්න</button>
+      )}
       <button onClick={() => void logout()}>Sign out / ඉවත් වන්න</button>
       <p role="status">{status}</p>
-      {rows.length === 0 ? (
-        <p>No deliveries available / දළු තොග නැත</p>
+      {user?.roles.includes('dispatcher') &&
+        (rows.length === 0 ? (
+          <p>No deliveries available / දළු තොග නැත</p>
+        ) : (
+          rows.map((row) => (
+            <article key={row.loadId}>
+              <h3>{row.crateCode}</h3>
+              <p>
+                Pickup / එකතු කළ බර:{' '}
+                {row.pickupKg === null ? 'Awaiting / බලා සිටී' : row.pickupKg + ' kg'}
+              </p>
+              <p>
+                Factory / කම්හලේ බර:{' '}
+                {row.receiptKg === null ? 'Awaiting / බලා සිටී' : row.receiptKg + ' kg'}
+              </p>
+              <p>
+                Difference / වෙනස:{' '}
+                {row.differenceKg === null
+                  ? 'Pending / බලා සිටී'
+                  : Number(row.differenceKg) < 0
+                    ? Math.abs(Number(row.differenceKg)) + ' kg less at receipt'
+                    : row.differenceKg + ' kg'}
+              </p>
+            </article>
+          ))
+        ))}
+      <h2>My devices / මගේ උපකරණ</h2>
+      <button onClick={() => void loadDevices()}>Refresh devices / උපකරණ යළි බලන්න</button>
+      {devices === null ? (
+        <p>Device list unavailable / උපකරණ ලැයිස්තුව නොමැත</p>
+      ) : devices.length === 0 ? (
+        <p>No registered devices / ලියාපදිංචි උපකරණ නැත</p>
       ) : (
-        rows.map((row) => (
-          <article key={row.loadId}>
-            <h3>{row.crateCode}</h3>
+        devices.map((device) => (
+          <article key={device.id}>
             <p>
-              Pickup / එකතු කළ බර:{' '}
-              {row.pickupKg === null ? 'Awaiting / බලා සිටී' : row.pickupKg + ' kg'}
+              {device.label} · {device.id.slice(-8)}
             </p>
-            <p>
-              Factory / කම්හලේ බර:{' '}
-              {row.receiptKg === null ? 'Awaiting / බලා සිටී' : row.receiptKg + ' kg'}
-            </p>
-            <p>
-              Difference / වෙනස:{' '}
-              {row.differenceKg === null
-                ? 'Pending / බලා සිටී'
-                : Number(row.differenceKg) < 0
-                  ? Math.abs(Number(row.differenceKg)) + ' kg less at receipt'
-                  : row.differenceKg + ' kg'}
-            </p>
+            <p>{device.revokedAt ? 'Revoked / ප්‍රවේශය නවතා ඇත' : 'Active / සක්‍රියයි'}</p>
+            {!device.revokedAt && (
+              <button onClick={() => void revokeDevice(device.id)}>
+                Revoke device / ප්‍රවේශය නවත්වන්න
+              </button>
+            )}
           </article>
         ))
       )}

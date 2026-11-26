@@ -8,7 +8,17 @@ import {
   staffIssues,
   storeStaffReading,
   syncStaff,
+  SessionInvalidError,
+  recordedLoads,
 } from './src/staff-queue';
+import {
+  deviceFor,
+  removeOfflineSession,
+  saveOfflineSession,
+  unlockOfflineSession,
+} from './src/staff-device';
+import type { DeviceIdentity } from './src/staff-device';
+import { fetchWithTimeout } from './src/network';
 type Identity = { id: string; displayName: string; roles: string[] };
 type Load = {
   loadId: string;
@@ -25,6 +35,9 @@ export default function App() {
     [password, setPassword] = useState('');
   const [token, setToken] = useState(''),
     [user, setUser] = useState<Identity>();
+  const [device, setDevice] = useState<DeviceIdentity>();
+  const [expiresAt, setExpiresAt] = useState('');
+  const [captureUnlocked, setCaptureUnlocked] = useState(false);
   const [loads, setLoads] = useState<Load[]>([]),
     [selected, setSelected] = useState<Load>();
   const [gross, setGross] = useState<number>(),
@@ -52,17 +65,41 @@ export default function App() {
         body: JSON.stringify({ username, password }),
       });
       if (!response.ok) throw new Error('Sign in failed / පිවිසීම අසාර්ථකයි');
-      const session = (await response.json()) as { token: string; user: Identity };
+      const session = (await response.json()) as {
+        token: string;
+        user: Identity;
+        expiresAt: string;
+      };
       if (!session.user.roles.some((role) => ['weigher', 'receiver'].includes(role)))
         throw new Error('Field account required');
+      const currentDevice = await deviceFor(session.user.id);
+      const enrollment = await fetch(API + '/auth/devices/enroll', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: 'Bearer ' + session.token },
+        body: JSON.stringify({ ...currentDevice, label: 'Field phone' }),
+      });
+      if (!enrollment.ok)
+        throw new Error(
+          'Device registration failed. Sign in on the office site to review devices.',
+        );
       const manifest = await fetch(API + '/staff/loads', {
-        headers: { authorization: 'Bearer ' + session.token },
+        headers: {
+          authorization: 'Bearer ' + session.token,
+          'x-device-secret': currentDevice.secret,
+        },
       });
       if (!manifest.ok) throw new Error('Could not load assigned crates');
-      const list = (await manifest.json()) as Load[];
+      const recorded = new Set(await recordedLoads(db, session.user.id));
+      const list = ((await manifest.json()) as Load[]).map((load) => ({
+        ...load,
+        recorded: load.recorded || recorded.has(load.loadId),
+      }));
       setPassword('');
       setUser(session.user);
       setToken(session.token);
+      setDevice(currentDevice);
+      setExpiresAt(session.expiresAt);
+      setCaptureUnlocked(true);
       setLoads(list);
       setSelected(list.find((load) => !load.recorded));
       await refresh(db, session.user.id);
@@ -75,15 +112,34 @@ export default function App() {
     }
   }
   async function sync() {
-    if (!db || !user || !token || syncing.current) return;
+    if (!db || !user || !token || !device || syncing.current) return;
     syncing.current = true;
     setBusy(true);
     try {
-      await syncStaff(db, user.id, token, API);
+      const status = await fetchWithTimeout(API + '/auth/me', {
+        headers: { authorization: 'Bearer ' + token, 'x-device-secret': device.secret },
+      });
+      if (status.status === 401)
+        throw new SessionInvalidError('Session expired or device revoked. Sign in online.');
+      if (!status.ok)
+        throw new Error('Could not verify session; saved readings remain on the phone.');
+      const verified = status.data as Identity;
+      const stageRole = user.roles.includes('weigher') ? 'weigher' : 'receiver';
+      if (verified.id !== user.id || !verified.roles.includes(stageRole))
+        throw new SessionInvalidError('Staff access changed. Sign in online.');
+      setCaptureUnlocked(true);
+      await syncStaff(db, user.id, token, device.secret, API);
       await refresh(db, user.id);
       setMessage('Sync checked / යැවීම් පරීක්ෂා කළා');
     } catch (error) {
       await refresh(db, user.id);
+      if (error instanceof SessionInvalidError) {
+        setToken('');
+        setUser(undefined);
+        setDevice(undefined);
+        setCaptureUnlocked(false);
+        await removeOfflineSession().catch(() => undefined);
+      }
       setMessage(error instanceof Error ? error.message : 'Sync failed');
     } finally {
       syncing.current = false;
@@ -92,6 +148,7 @@ export default function App() {
   }
   useEffect(() => {
     if (!token || !user || !db) return;
+    void sync();
     const timer = setInterval(() => void sync(), 15000);
     const sub = AppState.addEventListener('change', (state) => {
       if (state === 'active') void sync();
@@ -100,9 +157,9 @@ export default function App() {
       clearInterval(timer);
       sub.remove();
     };
-  }, [token, user, db]);
+  }, [token, user, db, device]);
   async function measure() {
-    if (!selected || !user) return;
+    if (!selected || !user || !captureUnlocked) return;
     const stage = user.roles.includes('weigher') ? 'pickup' : 'receipt';
     const scale = new SimulatedScale([
       {
@@ -116,7 +173,11 @@ export default function App() {
     await scale.disconnect();
   }
   async function save() {
-    if (!db || !user || !selected || gross === undefined || busy) return;
+    if (!db || !user || !selected || gross === undefined || busy || !captureUnlocked) return;
+    if (Date.now() >= Date.parse(expiresAt)) {
+      setMessage('Session expired. Sign in online before recording.');
+      return;
+    }
     setBusy(true);
     try {
       await storeStaffReading(db, user.id, {
@@ -143,18 +204,57 @@ export default function App() {
   }
   async function logout() {
     try {
-      await fetch(API + '/auth/logout', {
+      await fetchWithTimeout(API + '/auth/logout', {
         method: 'POST',
-        headers: { authorization: 'Bearer ' + token },
+        headers: { authorization: 'Bearer ' + token, 'x-device-secret': device?.secret ?? '' },
       });
     } catch {
       setMessage('Signed out on this device. Revoke session when connected.');
     }
     setToken('');
     setUser(undefined);
+    setDevice(undefined);
+    setCaptureUnlocked(false);
     setLoads([]);
     setSelected(undefined);
     setGross(undefined);
+    await removeOfflineSession().catch(() => {
+      setMessage('Signed out. Could not remove the saved session; reconnect to verify access.');
+    });
+  }
+  async function enableOffline() {
+    if (!user || !device || !token) return;
+    try {
+      await saveOfflineSession({ token, user, device, expiresAt, savedAt: Date.now(), loads });
+      setMessage('Saved-session unlock enabled. Reconnect after restart before recording.');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Could not enable offline unlock');
+    }
+  }
+  async function unlockOffline() {
+    if (!db || busy) return;
+    setBusy(true);
+    try {
+      const saved = await unlockOfflineSession();
+      const recorded = new Set(await recordedLoads(db, saved.user.id));
+      const available = saved.loads.map((load) => ({
+        ...load,
+        recorded: load.recorded || recorded.has(load.loadId),
+      }));
+      setUser(saved.user);
+      setToken(saved.token);
+      setDevice(saved.device);
+      setExpiresAt(saved.expiresAt);
+      setCaptureUnlocked(false);
+      setLoads(available);
+      setSelected(available.find((load) => !load.recorded));
+      await refresh(db, saved.user.id);
+      setMessage('Saved session unlocked. Reconnect to verify before recording new weights.');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Could not unlock offline');
+    } finally {
+      setBusy(false);
+    }
   }
   return (
     <ScrollView
@@ -183,6 +283,11 @@ export default function App() {
             style={{ borderWidth: 1, padding: 12, minHeight: 48 }}
           />
           <Button title="Sign in / පිවිසෙන්න" disabled={!db || busy} onPress={() => void login()} />
+          <Button
+            title="Unlock saved session / සුරැකි ගිණුම විවෘත කරන්න"
+            disabled={!db || busy}
+            onPress={() => void unlockOffline()}
+          />
         </>
       ) : (
         <>
@@ -193,6 +298,10 @@ export default function App() {
               : 'Factory receipt / කම්හලේ භාරගැනීම'}
           </Text>
           <Text>SIMULATED SCALE / ආදර්ශ තරාදිය</Text>
+          <Text>Device / උපකරණය: {device?.id.slice(-8)}</Text>
+          {!captureUnlocked && (
+            <Text>Reconnect to verify before recording / බර සටහන් කිරීමට නැවත සම්බන්ධ වන්න</Text>
+          )}
           {loads.length === 0 ? (
             <Text>No assigned crates / පැවරූ පෙට්ටි නැත</Text>
           ) : (
@@ -214,7 +323,7 @@ export default function App() {
           )}
           <Button
             title="Read simulated scale / තරාදිය කියවන්න"
-            disabled={!selected || busy}
+            disabled={!selected || busy || !captureUnlocked}
             onPress={() => void measure()}
           />
           <Text>Gross / මුළු බර: {gross === undefined ? '—' : gross / 1000} kg</Text>
@@ -235,6 +344,11 @@ export default function App() {
             {pending} pending / යැවීමට {pending}ක් · {problems} need attention
           </Text>
           <Button title="Sync / යවන්න" disabled={busy} onPress={() => void sync()} />
+          <Button
+            title="Enable saved-session unlock / සුරැකි ගිණුම විවෘත කිරීම"
+            disabled={busy}
+            onPress={() => void enableOffline()}
+          />
           <Button title="Sign out / ඉවත් වන්න" disabled={busy} onPress={() => void logout()} />
         </>
       )}

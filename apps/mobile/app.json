@@ -10,6 +10,7 @@
     },
     "ios": {
       "bundleIdentifier": "lk.dalumaga.field"
-    }
+    },
+    "plugins": ["expo-secure-store"]
   }
 }

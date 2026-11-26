@@ -112,12 +112,48 @@ test(
       const w = await login('w'),
         r = await login('r'),
         d = await login('d');
+      const deviceId = randomUUID();
+      const weigherSecret = 'a'.repeat(64);
+      const receiverSecret = 'b'.repeat(64);
+      const enroll = async (token: string, device: string, secret: string) =>
+        fetch(url + '/v1/auth/devices/enroll', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token },
+          body: JSON.stringify({ id: device, label: 'Test phone', secret }),
+        });
+      assert.equal((await enroll(w, deviceId, weigherSecret)).status, 201);
+      assert.equal((await enroll(r, randomUUID(), receiverSecret)).status, 201);
+      assert.equal(
+        (await fetch(url + '/v1/staff/loads', { headers: { authorization: 'Bearer ' + w } }))
+          .status,
+        401,
+      );
+      assert.equal(
+        (
+          await fetch(url + '/v1/staff/loads', {
+            headers: { authorization: 'Bearer ' + w, 'x-device-secret': receiverSecret },
+          })
+        ).status,
+        401,
+      );
+      assert.equal(
+        (
+          await fetch(url + '/v1/staff/loads', {
+            headers: { authorization: 'Bearer ' + w, 'x-device-secret': weigherSecret },
+          })
+        ).status,
+        200,
+      );
       const id = randomUUID(),
         now = new Date().toISOString();
       const post = async (token: string, stage: string, grossGrams: number, eventId: string) =>
         fetch(url + '/v1/staff/weighings', {
           method: 'POST',
-          headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token },
+          headers: {
+            'content-type': 'application/json',
+            authorization: 'Bearer ' + token,
+            'x-device-secret': token === w ? weigherSecret : receiverSecret,
+          },
           body: JSON.stringify({
             id: eventId,
             loadId: load,
@@ -136,7 +172,7 @@ test(
       const unauthenticated = await fetch(url + '/v1/staff/loads');
       assert.equal(unauthenticated.status, 401);
       const denied = await fetch(url + '/v1/staff/comparisons', {
-        headers: { authorization: 'Bearer ' + w },
+        headers: { authorization: 'Bearer ' + w, 'x-device-secret': weigherSecret },
       });
       assert.equal(denied.status, 403);
       const result = await fetch(url + '/v1/staff/comparisons', {
@@ -144,6 +180,23 @@ test(
       });
       const rows = (await result.json()) as { differenceKg: string }[];
       assert.equal(Number(rows[0]?.differenceKg), -3);
+      const recovery = await login('w');
+      assert.equal(
+        (
+          await fetch(url + '/v1/auth/devices/' + deviceId + '/revoke', {
+            method: 'POST',
+            headers: { authorization: 'Bearer ' + d },
+          })
+        ).status,
+        403,
+      );
+      const revoke = await fetch(url + '/v1/auth/devices/' + deviceId + '/revoke', {
+        method: 'POST',
+        headers: { authorization: 'Bearer ' + recovery },
+      });
+      assert.equal(revoke.status, 201);
+      assert.equal((await post(w, 'pickup', 20000, id)).status, 401);
+      assert.equal((await enroll(recovery, deviceId, weigherSecret)).status, 403);
       const logout = await fetch(url + '/v1/auth/logout', {
         method: 'POST',
         headers: { authorization: 'Bearer ' + d },

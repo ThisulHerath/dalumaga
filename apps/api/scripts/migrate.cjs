@@ -1,6 +1,7 @@
 const { DataSource } = require('typeorm');
 const { PilotSchema1760000000000 } = require('../migrations/1760000000000-PilotSchema.cjs');
 const { StaffAuth1760000000001 } = require('../migrations/1760000000001-StaffAuth.cjs');
+const { StaffDevices1760000000002 } = require('../migrations/1760000000002-StaffDevices.cjs');
 
 async function main() {
   const command = process.argv[2];
@@ -12,7 +13,7 @@ async function main() {
     schema: 'public',
     synchronize: false,
     migrationsTableName: 'dalumaga_migrations',
-    migrations: [PilotSchema1760000000000, StaffAuth1760000000001],
+    migrations: [PilotSchema1760000000000, StaffAuth1760000000001, StaffDevices1760000000002],
   });
   await db.initialize();
   try {
