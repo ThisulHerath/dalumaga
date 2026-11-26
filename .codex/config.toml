@@ -1,0 +1,19 @@
+[agents.backend_database]
+description = "Implement and review NestJS APIs, PostgreSQL migrations, RBAC, idempotent synchronization, corrections and audit history."
+config_file = "agents/backend_database.toml"
+
+[agents.mobile_offline]
+description = "Implement Expo field workflows, SQLite queues, offline recovery, and synchronization."
+config_file = "agents/mobile_offline.toml"
+
+[agents.web_dashboard]
+description = "Implement and review the React office dashboard, deadlines, alerts, vehicle status and weight review."
+config_file = "agents/web_dashboard.toml"
+
+[agents.hardware_simulation]
+description = "Implement and review scale and tracker interfaces, simulators, and verified hardware adapters."
+config_file = "agents/hardware_simulation.toml"
+
+[agents.quality_security]
+description = "Review assigned changes for correctness, security, data consistency and pilot acceptance criteria."
+config_file = "agents/quality_security.toml"

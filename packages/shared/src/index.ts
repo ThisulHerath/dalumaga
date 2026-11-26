@@ -1,4 +1,7 @@
 import { z } from 'zod';
+export * from './hardware.js';
+export * from './scales.js';
+export * from './tracker-simulator.js';
 
 export const APP_NAME = 'DaluMaga';
 export const RoleSchema = z.enum([
