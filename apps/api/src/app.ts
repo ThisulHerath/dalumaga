@@ -3,6 +3,9 @@ import { Controller, Get, Module } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { APP_NAME, type Health } from '@dalumaga/shared';
 import { DemoController, DemoService } from './demo';
+import { StaffAuth } from './staff-auth';
+import { StaffAuthController } from './staff-auth.controller';
+import { StaffWeighingController } from './staff-weighing';
 
 @Controller('health')
 class HealthController {
@@ -12,8 +15,11 @@ class HealthController {
   }
 }
 @Module({
-  controllers: [HealthController, DemoController],
-  providers: [{ provide: DemoService, useFactory: () => new DemoService() }],
+  controllers: [HealthController, DemoController, StaffAuthController, StaffWeighingController],
+  providers: [
+    { provide: DemoService, useFactory: () => new DemoService() },
+    { provide: StaffAuth, useFactory: () => new StaffAuth() },
+  ],
 })
 class AppModule {}
 export async function createApp() {

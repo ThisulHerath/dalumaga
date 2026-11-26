@@ -68,3 +68,24 @@ dd {
     padding: 24px 16px;
   }
 }
+label {
+  display: block;
+  margin: 16px 0;
+  font-weight: 600;
+}
+input {
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  min-height: 48px;
+  border: 1px solid #64776a;
+  border-radius: 8px;
+  padding: 10px;
+  font: inherit;
+}
+article {
+  border: 1px solid #cbd5cc;
+  border-radius: 8px;
+  padding: 16px;
+  margin: 16px 0;
+}

@@ -1,6 +1,9 @@
 import { createApp } from './app';
 async function main() {
-  if (process.env.DALUMAGA_DEMO === 'true' && process.env.HOST !== '127.0.0.1') {
+  if (
+    (process.env.DALUMAGA_DEMO === 'true' || process.env.DALUMAGA_STAFF_SIMULATOR === 'true') &&
+    process.env.HOST !== '127.0.0.1'
+  ) {
     throw new Error('Sample mode requires HOST=127.0.0.1');
   }
   const app = await createApp();

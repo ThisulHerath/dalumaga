@@ -25,7 +25,13 @@
     "dev": {
       "cache": false,
       "persistent": true,
-      "passThroughEnv": ["DALUMAGA_DEMO", "DALUMAGA_DEMO_DATABASE_URL", "HOST"]
+      "passThroughEnv": [
+        "DALUMAGA_DEMO",
+        "DALUMAGA_DEMO_DATABASE_URL",
+        "DALUMAGA_STAFF_SIMULATOR",
+        "NODE_EXTRA_CA_CERTS",
+        "HOST"
+      ]
     }
   }
 }
