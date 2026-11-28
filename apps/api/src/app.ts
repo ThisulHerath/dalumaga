@@ -6,6 +6,7 @@ import { DemoController, DemoService } from './demo';
 import { StaffAuth } from './staff-auth';
 import { StaffAuthController } from './staff-auth.controller';
 import { StaffWeighingController } from './staff-weighing';
+import { DriverController } from './driver';
 
 @Controller('health')
 class HealthController {
@@ -15,7 +16,13 @@ class HealthController {
   }
 }
 @Module({
-  controllers: [HealthController, DemoController, StaffAuthController, StaffWeighingController],
+  controllers: [
+    HealthController,
+    DemoController,
+    StaffAuthController,
+    StaffWeighingController,
+    DriverController,
+  ],
   providers: [
     { provide: DemoService, useFactory: () => new DemoService() },
     { provide: StaffAuth, useFactory: () => new StaffAuth() },

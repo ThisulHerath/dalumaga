@@ -21,6 +21,9 @@ import {
 import type { DeviceIdentity } from './src/staff-device';
 import { fetchWithTimeout } from './src/network';
 import { matchCrate } from './src/crate-match';
+import { setupDriverQueue, syncDriver } from './src/driver-queue';
+import type { DriverTrip } from './src/driver-queue';
+import { DriverPanel } from './src/DriverPanel';
 type Identity = { id: string; displayName: string; roles: string[] };
 type Load = {
   loadId: string;
@@ -43,6 +46,7 @@ export default function App() {
   const [captureUnlocked, setCaptureUnlocked] = useState(false);
   const [loads, setLoads] = useState<Load[]>([]),
     [selected, setSelected] = useState<Load>();
+  const [trips, setTrips] = useState<DriverTrip[]>([]);
   const [gross, setGross] = useState<number>(),
     [pending, setPending] = useState(0),
     [problems, setProblems] = useState(0);
@@ -56,7 +60,10 @@ export default function App() {
   const syncing = useRef(false);
   useEffect(() => {
     void openStaffQueue()
-      .then(setDb)
+      .then(async (database) => {
+        await setupDriverQueue(database);
+        setDb(database);
+      })
       .catch((error: unknown) => {
         setStorageUnavailable(true);
         setMessage(error instanceof Error ? error.message : 'Cannot open encrypted local storage');
@@ -81,7 +88,7 @@ export default function App() {
         user: Identity;
         expiresAt: string;
       };
-      if (!session.user.roles.some((role) => ['weigher', 'receiver'].includes(role)))
+      if (!session.user.roles.some((role) => ['weigher', 'receiver', 'driver'].includes(role)))
         throw new Error('Field account required');
       const currentDevice = await deviceFor(session.user.id);
       const enrollment = await fetch(API + '/auth/devices/enroll', {
@@ -93,7 +100,10 @@ export default function App() {
         throw new Error(
           'Device registration failed. Sign in on the office site to review devices.',
         );
-      const manifest = await fetch(API + '/staff/loads', {
+      const isDriver =
+        session.user.roles.includes('driver') &&
+        !session.user.roles.some((role) => ['weigher', 'receiver'].includes(role));
+      const manifest = await fetch(API + (isDriver ? '/driver/trips' : '/staff/loads'), {
         headers: {
           authorization: 'Bearer ' + session.token,
           'x-device-secret': currentDevice.secret,
@@ -101,7 +111,8 @@ export default function App() {
       });
       if (!manifest.ok) throw new Error('Could not load assigned crates');
       const recorded = new Set(await recordedLoads(db, session.user.id));
-      const list = ((await manifest.json()) as Load[]).map((load) => ({
+      const result = await manifest.json();
+      const list = (isDriver ? [] : (result as Load[])).map((load) => ({
         ...load,
         recorded: load.recorded || recorded.has(load.loadId),
       }));
@@ -112,6 +123,7 @@ export default function App() {
       setExpiresAt(session.expiresAt);
       setCaptureUnlocked(true);
       setLoads(list);
+      setTrips(isDriver ? (result as DriverTrip[]) : []);
       setSelected(undefined);
       await refresh(db, session.user.id);
       setMessage('');
@@ -135,11 +147,16 @@ export default function App() {
       if (!status.ok)
         throw new Error('Could not verify session; saved readings remain on the phone.');
       const verified = status.data as Identity;
-      const stageRole = user.roles.includes('weigher') ? 'weigher' : 'receiver';
+      const stageRole = user.roles.includes('weigher')
+        ? 'weigher'
+        : user.roles.includes('receiver')
+          ? 'receiver'
+          : 'driver';
       if (verified.id !== user.id || !verified.roles.includes(stageRole))
         throw new SessionInvalidError('Staff access changed. Sign in online.');
       setCaptureUnlocked(true);
-      await syncStaff(db, user.id, token, device.secret, API);
+      if (stageRole === 'driver') await syncDriver(db, user.id, token, device.secret, API);
+      else await syncStaff(db, user.id, token, device.secret, API);
       await refresh(db, user.id);
       setMessage('Sync checked / යැවීම් පරීක්ෂා කළා');
     } catch (error) {
@@ -227,6 +244,7 @@ export default function App() {
     setDevice(undefined);
     setCaptureUnlocked(false);
     setLoads([]);
+    setTrips([]);
     setSelected(undefined);
     setGross(undefined);
     await removeOfflineSession().catch(() => {
@@ -236,7 +254,15 @@ export default function App() {
   async function enableOffline() {
     if (!user || !device || !token) return;
     try {
-      await saveOfflineSession({ token, user, device, expiresAt, savedAt: Date.now(), loads });
+      await saveOfflineSession({
+        token,
+        user,
+        device,
+        expiresAt,
+        savedAt: Date.now(),
+        loads,
+        trips,
+      });
       setMessage('Saved-session unlock enabled. Reconnect after restart before recording.');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Could not enable offline unlock');
@@ -258,6 +284,7 @@ export default function App() {
       setExpiresAt(saved.expiresAt);
       setCaptureUnlocked(false);
       setLoads(available);
+      setTrips(saved.trips ?? []);
       setSelected(undefined);
       await refresh(db, saved.user.id);
       setMessage('Saved session unlocked. Reconnect to verify before recording new weights.');
@@ -344,6 +371,28 @@ export default function App() {
             disabled={!db || busy}
             onPress={() => void unlockOffline()}
           />
+        </>
+      ) : user.roles.includes('driver') &&
+        !user.roles.some((role) => ['weigher', 'receiver'].includes(role)) &&
+        db ? (
+        <>
+          <Text style={{ fontSize: 20 }}>{user.displayName}</Text>
+          <Text>Device / උපකරණය: {device?.id.slice(-8)}</Text>
+          <DriverPanel
+            db={db}
+            actor={user.id}
+            trips={trips}
+            unlocked={captureUnlocked}
+            busy={busy}
+            expiresAt={expiresAt}
+            onUpdate={sync}
+          />
+          <Button
+            title="Enable saved-session unlock / සුරැකි ගිණුම විවෘත කිරීම"
+            disabled={busy}
+            onPress={() => void enableOffline()}
+          />
+          <Button title="Sign out / ඉවත් වන්න" disabled={busy} onPress={() => void logout()} />
         </>
       ) : (
         <>

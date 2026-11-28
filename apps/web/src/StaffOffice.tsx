@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { DriverOffice } from './DriverOffice';
 type Identity = { displayName: string; roles: string[] };
 type Device = { id: string; label: string; enrolledAt: string; revokedAt: string | null };
 type Row = {
@@ -201,6 +202,7 @@ export function StaffOffice() {
       )}
       <button onClick={() => void logout()}>Sign out / ඉවත් වන්න</button>
       <p role="status">{status}</p>
+      {user?.roles.includes('dispatcher') && <DriverOffice api={api} token={token} />}
       {user?.roles.includes('admin') && (
         <section>
           <h2>Lost phone recovery / නැතිවූ දුරකථන ප්‍රවේශය</h2>

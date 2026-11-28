@@ -1,6 +1,7 @@
 import * as Crypto from 'expo-crypto';
 import * as SecureStore from 'expo-secure-store';
 import { canUnlockSavedSession } from './offline-session-policy';
+import type { DriverTrip } from './driver-queue';
 
 export type DeviceIdentity = { id: string; secret: string };
 export type CachedLoad = {
@@ -18,6 +19,7 @@ export type CachedSession = {
   expiresAt: string;
   savedAt: number;
   loads: CachedLoad[];
+  trips?: DriverTrip[];
 };
 const SESSION_KEY = 'dalumaga.offline-session.v1';
 const protectedOptions: SecureStore.SecureStoreOptions = {

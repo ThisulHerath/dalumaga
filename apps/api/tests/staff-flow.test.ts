@@ -15,7 +15,7 @@ test(
       type: 'postgres',
       url: process.env.DATABASE_URL,
     }).initialize();
-    const ids = Array.from({ length: 12 }, () => randomUUID());
+    const ids = Array.from({ length: 13 }, () => randomUUID());
     const [
       weigher,
       receiver,
@@ -29,7 +29,9 @@ test(
       crate,
       load,
       admin,
+      driver,
     ] = ids as [
+      string,
       string,
       string,
       string,
@@ -49,16 +51,18 @@ test(
     const pass = 'test-password-12345';
     const hash = await hashPassword(pass);
     await db.query(
-      "INSERT INTO dalumaga.app_user(id,auth_subject,display_name) VALUES($1,$5,'Weigher'),($2,$6,'Receiver'),($3,$7,'Dispatcher'),($4,$8,'Admin')",
+      "INSERT INTO dalumaga.app_user(id,auth_subject,display_name) VALUES($1,$6,'Weigher'),($2,$7,'Receiver'),($3,$8,'Dispatcher'),($4,$9,'Admin'),($5,$10,'Driver')",
       [
         weigher,
         receiver,
         dispatcher,
         admin,
+        driver,
         'w' + suffix,
         'r' + suffix,
         'd' + suffix,
         'a' + suffix,
+        'v' + suffix,
       ],
     );
     for (const [id, role, name] of [
@@ -66,6 +70,7 @@ test(
       [receiver, 'receiver', 'r'],
       [dispatcher, 'dispatcher', 'd'],
       [admin, 'admin', 'a'],
+      [driver, 'driver', 'v'],
     ] as const) {
       await db.query('INSERT INTO dalumaga.user_role(user_id,role_code) VALUES($1,$2)', [id, role]);
       await db.query(
@@ -84,7 +89,7 @@ test(
     ]);
     await db.query(
       'INSERT INTO dalumaga.trip(id,route_id,vehicle_id,driver_id) VALUES($1,$2,$3,$4)',
-      [trip, route, vehicle, weigher],
+      [trip, route, vehicle, driver],
     );
     await db.query("INSERT INTO dalumaga.pickup_point(id,name) VALUES($1,'Test')", [point]);
     await db.query('INSERT INTO dalumaga.batch(id,trip_id,point_id) VALUES($1,$2,$3)', [
@@ -106,7 +111,7 @@ test(
       batch,
       crate,
     ]);
-    for (const id of [weigher, receiver, dispatcher])
+    for (const id of [weigher, receiver, dispatcher, driver])
       await db.query('INSERT INTO dalumaga.trip_assignment VALUES($1,$2)', [trip, id]);
     const app = await createApp();
     try {
@@ -124,11 +129,13 @@ test(
       const w = await login('w'),
         r = await login('r'),
         d = await login('d'),
-        a = await login('a');
+        a = await login('a'),
+        v = await login('v');
       const deviceId = randomUUID();
       const receiverDeviceId = randomUUID();
       const weigherSecret = 'a'.repeat(64);
       const receiverSecret = 'b'.repeat(64);
+      const driverSecret = 'd'.repeat(64);
       const enroll = async (token: string, device: string, secret: string) =>
         fetch(url + '/v1/auth/devices/enroll', {
           method: 'POST',
@@ -137,6 +144,95 @@ test(
         });
       assert.equal((await enroll(w, deviceId, weigherSecret)).status, 201);
       assert.equal((await enroll(r, receiverDeviceId, receiverSecret)).status, 201);
+      assert.equal((await enroll(v, randomUUID(), driverSecret)).status, 201);
+      const driverHeaders = {
+        authorization: 'Bearer ' + v,
+        'x-device-secret': driverSecret,
+        'content-type': 'application/json',
+      };
+      assert.equal((await fetch(url + '/v1/driver/trips', { headers: driverHeaders })).status, 200);
+      assert.equal(
+        (await fetch(url + '/v1/driver/trips', { headers: { authorization: 'Bearer ' + v } }))
+          .status,
+        401,
+      );
+      const office = () =>
+        fetch(url + '/v1/driver/office', { headers: { authorization: 'Bearer ' + d } });
+      let overview = (await (await office()).json()) as {
+        lastFixAt: string | null;
+        stopReason: string | null;
+      }[];
+      assert.equal(overview[0]?.lastFixAt, null);
+      assert.equal(overview[0]?.stopReason, null);
+      const stop = {
+        id: randomUUID(),
+        tripId: trip,
+        kind: 'stop',
+        reason: 'tea',
+        occurredAt: new Date().toISOString(),
+      };
+      const driverPost = (body: unknown, headers = driverHeaders) =>
+        fetch(url + '/v1/driver/events', { method: 'POST', headers, body: JSON.stringify(body) });
+      assert.equal(
+        (
+          await driverPost(stop, {
+            authorization: 'Bearer ' + w,
+            'x-device-secret': weigherSecret,
+            'content-type': 'application/json',
+          })
+        ).status,
+        403,
+      );
+      assert.equal((await driverPost(stop)).status, 201);
+      assert.equal((await driverPost(stop)).status, 201);
+      assert.equal((await driverPost({ ...stop, reason: 'toilet' })).status, 409);
+      assert.equal((await driverPost({ ...stop, id: randomUUID() })).status, 409);
+      overview = (await (await office()).json()) as typeof overview;
+      assert.equal(overview[0]?.stopReason, 'tea');
+      assert.equal(overview[0]?.lastFixAt, null);
+      const resume = {
+        id: randomUUID(),
+        tripId: trip,
+        kind: 'resume',
+        startId: stop.id,
+        occurredAt: new Date().toISOString(),
+      };
+      assert.equal((await driverPost(resume)).status, 201);
+      assert.equal((await driverPost(resume)).status, 201);
+      assert.equal((await driverPost({ ...resume, id: randomUUID() })).status, 409);
+      const sim = await fetch(url + '/v1/driver/simulate-position', {
+        method: 'POST',
+        headers: { authorization: 'Bearer ' + d, 'content-type': 'application/json' },
+        body: JSON.stringify({ tripId: trip, sample: 0 }),
+      });
+      assert.equal(sim.status, 201);
+      overview = (await (await office()).json()) as typeof overview;
+      assert.ok(overview[0]?.lastFixAt);
+      assert.equal(overview[0]?.stopReason, null);
+      const beforeGap = overview[0]?.lastFixAt;
+      const gap = await fetch(url + '/v1/driver/simulate-position', {
+        method: 'POST',
+        headers: { authorization: 'Bearer ' + d, 'content-type': 'application/json' },
+        body: JSON.stringify({ tripId: trip, sample: 1 }),
+      });
+      assert.equal(gap.status, 201);
+      assert.equal(((await gap.json()) as { signalGap: boolean }).signalGap, true);
+      overview = (await (await office()).json()) as typeof overview;
+      assert.equal(overview[0]?.lastFixAt, beforeGap);
+      assert.equal(overview[0]?.stopReason, null);
+      const history = (await (await office()).json()) as {
+        stopHistory: { reason: string; endedAt: string | null }[];
+      }[];
+      assert.equal(history[0]?.stopHistory.length, 1);
+      assert.equal(history[0]?.stopHistory[0]?.reason, 'tea');
+      assert.ok(history[0]?.stopHistory[0]?.endedAt);
+      assert.equal(
+        Number(
+          (await db.query('SELECT count(*) n FROM dalumaga.stop_event WHERE trip_id=$1', [trip]))[0]
+            .n,
+        ),
+        2,
+      );
       assert.equal(
         (await fetch(url + '/v1/staff/loads', { headers: { authorization: 'Bearer ' + w } }))
           .status,
