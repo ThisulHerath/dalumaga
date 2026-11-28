@@ -1,4 +1,6 @@
 import { locationAge } from './location-age';
+import { assessDeadline } from './deadline-risk';
+import type { SimulatedEstimate } from './deadline-risk';
 import { useEffect, useState } from 'react';
 const reasonLabels: Record<string, string> = {
   tea: 'Tea break / තේ විවේකය',
@@ -21,6 +23,105 @@ type Trip = {
   stopAt: string | null;
   stopHistory: { id: string; reason: string; startedAt: string; endedAt: string | null }[];
 };
+const configuredAge = import.meta.env?.VITE_SIMULATOR_FIX_MAX_AGE_MINUTES;
+const maxAgeMinutes = configuredAge === undefined ? 10 : Number(configuredAge);
+
+function DeadlinePreview({
+  trip,
+  now,
+  setNow,
+}: {
+  trip: Trip;
+  now: number;
+  setNow: (value: number) => void;
+}) {
+  const [minutes, setMinutes] = useState('');
+  const [estimate, setEstimate] = useState<SimulatedEstimate | null>(null);
+  const [error, setError] = useState('');
+  const result = assessDeadline({
+    deadline: trip.deadline,
+    fixAt: trip.lastFixAt,
+    source: trip.locationSource,
+    estimate,
+    now,
+    maxAgeMinutes,
+  });
+  const reasons: Record<string, string> = {
+    deadline: 'Deadline not configured / නියමිත වේලාව සකසා නැත',
+    location: 'No valid location / ස්ථාන දත්ත නැත',
+    source: 'A simulated location is required / පරීක්ෂණ ස්ථානයක් අවශ්‍යයි',
+    'stale-location': 'Location is stale / ස්ථාන දත්ත පරණයි',
+    clock: 'Check the location and computer clocks / වේලාව පරීක්ෂා කරන්න',
+    estimate: 'Enter a simulated travel time / පරීක්ෂණ ගමන් කාලය ඇතුළත් කරන්න',
+    'changed-location': 'Location changed; enter a new estimate / නව ඇස්තමේන්තුවක් ඇතුළත් කරන්න',
+    'stale-estimate': 'Estimate is out of date / ඇස්තමේන්තුව පරණයි',
+    configuration: 'Freshness setting is invalid / කාල සීමාව වැරදියි',
+  };
+  function submit(event: React.FormEvent) {
+    event.preventDefault();
+    const value = Number(minutes);
+    if (!minutes.trim() || !Number.isInteger(value) || value < 0 || value > 720) {
+      setError('Enter whole minutes from 0 to 720 / මිනිත්තු 0 සිට 720 දක්වා ඇතුළත් කරන්න');
+      return;
+    }
+    if (!trip.lastFixAt) {
+      setError('A simulated location is needed first / මුලින් පරීක්ෂණ ස්ථානයක් අවශ්‍යයි');
+      return;
+    }
+    const createdAt = Date.now();
+    setNow(createdAt);
+    setEstimate({ minutes: value, createdAt, fixAt: trip.lastFixAt });
+    setError('');
+  }
+  return (
+    <div>
+      <h4>Simulated arrival preview / පරීක්ෂණ පැමිණීම</h4>
+      <p>
+        Enter a test estimate for all remaining travel and stops. This is not a live routing
+        prediction or a sent alert.
+      </p>
+      <p>
+        ඉතිරි ගමන සහ විවේක සඳහා පරීක්ෂණ කාලයක් ඇතුළත් කරන්න. මෙය සජීවී අනාවැකියක් හෝ යැවූ අනතුරු
+        ඇඟවීමක් නොවේ.
+      </p>
+      <form onSubmit={submit}>
+        <label>
+          Remaining minutes / ඉතිරි මිනිත්තු{' '}
+          <input
+            type="number"
+            min="0"
+            max="720"
+            step="1"
+            value={minutes}
+            onChange={(event) => {
+              setMinutes(event.target.value);
+              setEstimate(null);
+              setError('');
+            }}
+          />
+        </label>
+        <button type="submit">Preview / පෙරදසුන</button>
+      </form>
+      <p role="status">{error}</p>
+      <p aria-live="polite">
+        {result.kind === 'unknown'
+          ? `Estimate unavailable / ඇස්තමේන්තුව නොමැත: ${reasons[result.reason]}`
+          : result.kind === 'overdue'
+            ? 'Earliest open deadline has passed / නියමිත වේලාව පසු වී ඇත'
+            : result.kind === 'at-risk'
+              ? `SIMULATED RISK / පරීක්ෂණ අවදානම: ${new Date(result.eta).toLocaleString()} · ${result.delayMinutes} min late`
+              : `Simulated arrival before or at deadline / නියමිත වේලාවට පෙර: ${new Date(result.eta).toLocaleString()}`}
+      </p>
+      <p>
+        Preview stays on this screen only. Freshness limit / දත්ත කාල සීමාව:{' '}
+        {Number.isFinite(maxAgeMinutes) && maxAgeMinutes > 0 && maxAgeMinutes <= 1440
+          ? `${maxAgeMinutes} min`
+          : 'invalid / වැරදියි'}
+        .
+      </p>
+    </div>
+  );
+}
 export function DriverOffice({ api, token }: { api: string; token: string }) {
   const [trips, setTrips] = useState<Trip[] | null>(null);
   const [message, setMessage] = useState('');
@@ -38,6 +139,7 @@ export function DriverOffice({ api, token }: { api: string; token: string }) {
       });
       if (!r.ok) throw Error('Unable to load trips / ගමන් පෙන්විය නොහැක');
       setTrips((await r.json()) as Trip[]);
+      setNow(Date.now());
       setMessage('');
     } catch (e) {
       setTrips(null);
@@ -83,9 +185,10 @@ export function DriverOffice({ api, token }: { api: string; token: string }) {
               {t.route} · {t.vehicle}
             </h3>
             <p>
-              Deadline / නියමිත වේලාව:{' '}
+              Earliest open batch deadline / ආසන්නතම නියමිත වේලාව:{' '}
               {t.deadline ? new Date(t.deadline).toLocaleString() : 'Not configured / සකසා නැත'}
             </p>
+            <DeadlinePreview trip={t} now={now} setNow={setNow} />
             <p>
               Last location fix / අවසන් ස්ථාන දත්ත:{' '}
               {t.lastFixAt
