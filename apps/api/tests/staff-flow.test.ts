@@ -15,7 +15,7 @@ test(
       type: 'postgres',
       url: process.env.DATABASE_URL,
     }).initialize();
-    const ids = Array.from({ length: 11 }, () => randomUUID());
+    const ids = Array.from({ length: 12 }, () => randomUUID());
     const [
       weigher,
       receiver,
@@ -28,7 +28,9 @@ test(
       batch,
       crate,
       load,
+      admin,
     ] = ids as [
+      string,
       string,
       string,
       string,
@@ -47,13 +49,23 @@ test(
     const pass = 'test-password-12345';
     const hash = await hashPassword(pass);
     await db.query(
-      "INSERT INTO dalumaga.app_user(id,auth_subject,display_name) VALUES($1,$4,'Weigher'),($2,$5,'Receiver'),($3,$6,'Dispatcher')",
-      [weigher, receiver, dispatcher, 'w' + suffix, 'r' + suffix, 'd' + suffix],
+      "INSERT INTO dalumaga.app_user(id,auth_subject,display_name) VALUES($1,$5,'Weigher'),($2,$6,'Receiver'),($3,$7,'Dispatcher'),($4,$8,'Admin')",
+      [
+        weigher,
+        receiver,
+        dispatcher,
+        admin,
+        'w' + suffix,
+        'r' + suffix,
+        'd' + suffix,
+        'a' + suffix,
+      ],
     );
     for (const [id, role, name] of [
       [weigher, 'weigher', 'w'],
       [receiver, 'receiver', 'r'],
       [dispatcher, 'dispatcher', 'd'],
+      [admin, 'admin', 'a'],
     ] as const) {
       await db.query('INSERT INTO dalumaga.user_role(user_id,role_code) VALUES($1,$2)', [id, role]);
       await db.query(
@@ -111,8 +123,10 @@ test(
       };
       const w = await login('w'),
         r = await login('r'),
-        d = await login('d');
+        d = await login('d'),
+        a = await login('a');
       const deviceId = randomUUID();
+      const receiverDeviceId = randomUUID();
       const weigherSecret = 'a'.repeat(64);
       const receiverSecret = 'b'.repeat(64);
       const enroll = async (token: string, device: string, secret: string) =>
@@ -122,7 +136,7 @@ test(
           body: JSON.stringify({ id: device, label: 'Test phone', secret }),
         });
       assert.equal((await enroll(w, deviceId, weigherSecret)).status, 201);
-      assert.equal((await enroll(r, randomUUID(), receiverSecret)).status, 201);
+      assert.equal((await enroll(r, receiverDeviceId, receiverSecret)).status, 201);
       assert.equal(
         (await fetch(url + '/v1/staff/loads', { headers: { authorization: 'Bearer ' + w } }))
           .status,
@@ -180,6 +194,63 @@ test(
       });
       const rows = (await result.json()) as { differenceKg: string }[];
       assert.equal(Number(rows[0]?.differenceKg), -3);
+      const search = (token: string, username: string) =>
+        fetch(url + '/v1/auth/recovery/devices/search', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token },
+          body: JSON.stringify({ username }),
+        });
+      assert.equal((await search(d, 'r' + suffix)).status, 403);
+      const found = await search(a, 'r' + suffix);
+      assert.equal(found.status, 201);
+      assert.deepEqual(
+        ((await found.json()) as { id: string }[]).map((device) => device.id),
+        [receiverDeviceId],
+      );
+      const adminDevice = randomUUID(),
+        adminDeviceSession = await login('a');
+      assert.equal((await enroll(adminDeviceSession, adminDevice, 'c'.repeat(64))).status, 201);
+      assert.deepEqual(await (await search(a, 'a' + suffix)).json(), []);
+      const adminRevoke = (token: string, target: string, reason: string) =>
+        fetch(url + '/v1/auth/recovery/devices/' + target + '/revoke', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token },
+          body: JSON.stringify({ reason }),
+        });
+      assert.equal((await adminRevoke(d, receiverDeviceId, 'lost')).status, 403);
+      assert.equal((await adminRevoke(a, receiverDeviceId, 'invalid')).status, 400);
+      assert.equal((await adminRevoke(a, adminDevice, 'lost')).status, 403);
+      await db.query("INSERT INTO dalumaga.user_role(user_id,role_code) VALUES($1,'manager')", [
+        receiver,
+      ]);
+      assert.deepEqual(await (await search(a, 'r' + suffix)).json(), []);
+      assert.equal((await adminRevoke(a, receiverDeviceId, 'lost')).status, 403);
+      await db.query("DELETE FROM dalumaga.user_role WHERE user_id=$1 AND role_code='manager'", [
+        receiver,
+      ]);
+      assert.equal((await adminRevoke(a, receiverDeviceId, 'lost')).status, 201);
+      assert.equal((await post(r, 'receipt', 17000, randomUUID())).status, 401);
+      assert.equal((await adminRevoke(a, receiverDeviceId, 'lost')).status, 403);
+      const audits = await db.query(
+        "SELECT actor_id,detail FROM dalumaga.audit_log WHERE entity_id=$1 AND action='recovery_revoke'",
+        [receiverDeviceId],
+      );
+      assert.equal(audits.length, 1);
+      assert.equal(audits[0].actor_id, admin);
+      assert.equal(audits[0].detail.reason, 'lost');
+      assert.equal(audits[0].detail.userId, receiver);
+      process.env.DALUMAGA_STAFF_SIMULATOR = 'false';
+      assert.equal((await search(a, 'w' + suffix)).status, 403);
+      assert.equal((await adminRevoke(a, deviceId, 'lost')).status, 403);
+      process.env.DALUMAGA_STAFF_SIMULATOR = 'true';
+      const previousNodeEnv = process.env.NODE_ENV;
+      process.env.NODE_ENV = 'production';
+      try {
+        assert.equal((await search(a, 'w' + suffix)).status, 403);
+      } finally {
+        if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+        else process.env.NODE_ENV = previousNodeEnv;
+      }
       const recovery = await login('w');
       assert.equal(
         (

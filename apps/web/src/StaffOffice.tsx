@@ -17,6 +17,11 @@ export function StaffOffice() {
   const [rows, setRows] = useState<Row[]>([]);
   const [devices, setDevices] = useState<Device[] | null>(null);
   const [status, setStatus] = useState('');
+  const [staffUsername, setStaffUsername] = useState('');
+  const [foundUsername, setFoundUsername] = useState('');
+  const [recoveryDevices, setRecoveryDevices] = useState<Device[] | null>(null);
+  const [recoveryReason, setRecoveryReason] = useState('lost');
+  const [recoveryBusy, setRecoveryBusy] = useState(false);
   async function signIn(event: React.FormEvent) {
     event.preventDefault();
     try {
@@ -93,6 +98,69 @@ export function StaffOffice() {
       setUser(undefined);
       setRows([]);
       setDevices(null);
+      setRecoveryDevices(null);
+      setStaffUsername('');
+      setFoundUsername('');
+    }
+  }
+  async function findStaffDevices(event: React.FormEvent) {
+    event.preventDefault();
+    const username = staffUsername.trim();
+    if (!username || recoveryBusy) return;
+    setRecoveryBusy(true);
+    setRecoveryDevices(null);
+    setFoundUsername('');
+    try {
+      const response = await fetch(api + '/auth/recovery/devices/search', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token },
+        body: JSON.stringify({ username }),
+      });
+      if (!response.ok)
+        throw new Error(
+          'Could not find devices. Check access and try again. / උපකරණ සොයාගත නොහැක. නැවත උත්සාහ කරන්න.',
+        );
+      setRecoveryDevices((await response.json()) as Device[]);
+      setFoundUsername(username);
+      setStatus('');
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Could not find devices.');
+    } finally {
+      setRecoveryBusy(false);
+    }
+  }
+  async function revokeStaffDevice(device: Device) {
+    if (recoveryBusy || !foundUsername || staffUsername.trim() !== foundUsername) return;
+    if (
+      !window.confirm(
+        `Revoke device ${device.id.slice(-8)} for ${foundUsername}? / මෙම උපකරණයේ ප්‍රවේශය නවත්වන්නද?`,
+      )
+    )
+      return;
+    setRecoveryBusy(true);
+    try {
+      const response = await fetch(api + '/auth/recovery/devices/' + device.id + '/revoke', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token },
+        body: JSON.stringify({ reason: recoveryReason }),
+      });
+      if (!response.ok)
+        throw new Error(
+          'Could not revoke device. Refresh and try again. / ප්‍රවේශය නැවැත්විය නොහැක. නැවත උත්සාහ කරන්න.',
+        );
+      setRecoveryDevices(
+        (current) =>
+          current?.map((item) =>
+            item.id === device.id ? { ...item, revokedAt: new Date().toISOString() } : item,
+          ) ?? null,
+      );
+      setStatus(
+        'Device revoked. The phone will be rejected when it reconnects. / දුරකථනය නැවත සම්බන්ධ වූ විට ප්‍රවේශය නවතී.',
+      );
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Could not revoke device.');
+    } finally {
+      setRecoveryBusy(false);
     }
   }
   if (!token)
@@ -133,6 +201,71 @@ export function StaffOffice() {
       )}
       <button onClick={() => void logout()}>Sign out / ඉවත් වන්න</button>
       <p role="status">{status}</p>
+      {user?.roles.includes('admin') && (
+        <section>
+          <h2>Lost phone recovery / නැතිවූ දුරකථන ප්‍රවේශය</h2>
+          <p>Development simulator only / පරීක්ෂණ සඳහා පමණි</p>
+          <p>
+            Saved readings that never reached the server remain on the phone. Revocation takes
+            effect when the phone reconnects.
+          </p>
+          <p>යවා නොමැති බර සටහන් දුරකථනයේ පමණක් තිබිය හැක. නැවත සම්බන්ධ වූ විට ප්‍රවේශය නවතී.</p>
+          <form onSubmit={(event) => void findStaffDevices(event)}>
+            <label>
+              Staff username / සේවක පරිශීලක නාමය
+              <input
+                value={staffUsername}
+                disabled={recoveryBusy}
+                onChange={(e) => {
+                  setStaffUsername(e.target.value);
+                  setFoundUsername('');
+                  setRecoveryDevices(null);
+                }}
+                required
+                maxLength={128}
+              />
+            </label>
+            <button type="submit" disabled={recoveryBusy}>
+              Find devices / උපකරණ සොයන්න
+            </button>
+          </form>
+          {recoveryDevices !== null && (
+            <>
+              <p>Devices for / උපකරණ: {foundUsername}</p>
+              <label>
+                Reason / හේතුව
+                <select
+                  value={recoveryReason}
+                  disabled={recoveryBusy}
+                  onChange={(e) => setRecoveryReason(e.target.value)}
+                >
+                  <option value="lost">Lost / නැතිවී ඇත</option>
+                  <option value="stolen">Stolen / සොරකම් කර ඇත</option>
+                  <option value="compromised">Access compromised / ප්‍රවේශය අනාරක්ෂිතයි</option>
+                </select>
+              </label>
+              {recoveryDevices.length === 0 && <p>No eligible devices found / උපකරණ හමු නොවීය</p>}
+              {recoveryDevices.map((device) => (
+                <article key={device.id}>
+                  <p>
+                    {device.label} · {device.id.slice(-8)} ·{' '}
+                    {device.revokedAt ? 'Revoked / නවතා ඇත' : 'Active / සක්‍රියයි'}
+                  </p>
+                  {!device.revokedAt && (
+                    <button
+                      type="button"
+                      disabled={recoveryBusy}
+                      onClick={() => void revokeStaffDevice(device)}
+                    >
+                      Revoke device / ප්‍රවේශය නවත්වන්න
+                    </button>
+                  )}
+                </article>
+              ))}
+            </>
+          )}
+        </section>
+      )}
       {user?.roles.includes('dispatcher') &&
         (rows.length === 0 ? (
           <p>No deliveries available / දළු තොග නැත</p>

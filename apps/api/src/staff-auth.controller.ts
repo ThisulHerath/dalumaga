@@ -57,4 +57,29 @@ export class StaffAuthController {
     await this.auth.revokeDevice(header, id);
     return { success: true };
   }
+  @Post('recovery/devices/search') recoveryDevices(
+    @Headers('authorization') header: string | undefined,
+    @Body() body: unknown,
+  ) {
+    const parsed = z
+      .object({ username: z.string().trim().min(1).max(128) })
+      .strict()
+      .safeParse(body);
+    if (!parsed.success) throw new BadRequestException('Enter a staff username');
+    return this.auth.recoveryDevices(header, parsed.data.username);
+  }
+  @Post('recovery/devices/:id/revoke') async recoveryRevoke(
+    @Headers('authorization') header: string | undefined,
+    @Param('id') id: string,
+    @Body() body: unknown,
+  ) {
+    const parsed = z
+      .object({ reason: z.enum(['lost', 'stolen', 'compromised']) })
+      .strict()
+      .safeParse(body);
+    if (!z.string().uuid().safeParse(id).success || !parsed.success)
+      throw new BadRequestException('Invalid recovery request');
+    await this.auth.recoveryRevokeDevice(header, id, parsed.data.reason);
+    return { success: true };
+  }
 }

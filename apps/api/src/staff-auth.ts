@@ -225,6 +225,87 @@ export class StaffAuth {
       );
     });
   }
+  private requireRecoverySimulator(): void {
+    if (process.env.DALUMAGA_STAFF_SIMULATOR !== 'true' || process.env.NODE_ENV === 'production')
+      throw new ForbiddenException('Recovery is available only in the development simulator');
+  }
+  async recoveryDevices(header: string | undefined, username: string) {
+    this.requireRecoverySimulator();
+    await this.authorize(header, ['admin']);
+    const db = await this.database();
+    return db.query(
+      `SELECT d.id,d.label,d.enrolled_at AS "enrolledAt",d.revoked_at AS "revokedAt"
+       FROM dalumaga.staff_device d JOIN dalumaga.staff_credential c ON c.user_id=d.user_id
+       WHERE c.username=$1
+       AND EXISTS (SELECT 1 FROM dalumaga.user_role r WHERE r.user_id=d.user_id AND r.role_code IN ('weigher','receiver','driver'))
+       AND NOT EXISTS (SELECT 1 FROM dalumaga.user_role r WHERE r.user_id=d.user_id AND r.role_code IN ('admin','manager'))
+       ORDER BY d.enrolled_at DESC`,
+      [username.trim().toLowerCase()],
+    );
+  }
+  async recoveryRevokeDevice(
+    header: string | undefined,
+    id: string,
+    reason: 'lost' | 'stolen' | 'compromised',
+  ): Promise<void> {
+    this.requireRecoverySimulator();
+    const admin = await this.authorize(header, ['admin']);
+    const token = header!.slice(7);
+    const db = await this.database();
+    await db.transaction(async (tx) => {
+      const active = (await tx.query(
+        `SELECT s.token_hash FROM dalumaga.staff_session s
+         JOIN dalumaga.app_user u ON u.id=s.user_id
+         JOIN dalumaga.user_role r ON r.user_id=u.id AND r.role_code='admin'
+         WHERE s.token_hash=$1 AND s.user_id=$2 AND s.device_id IS NULL
+         AND s.revoked_at IS NULL AND s.expires_at>now() AND u.enabled
+         FOR SHARE OF s,u,r`,
+        [tokenHash(token), admin.id],
+      )) as unknown[];
+      if (!active.length)
+        throw new UnauthorizedException('Admin session expired or access changed');
+      // Match the device-first lock order used when accepting a weighing.
+      const targets = (await tx.query(
+        'SELECT id,user_id FROM dalumaga.staff_device WHERE id=$1 AND user_id<>$2 AND revoked_at IS NULL FOR UPDATE',
+        [id, admin.id],
+      )) as { id: string; user_id: string }[];
+      const target = targets[0];
+      if (!target) throw new ForbiddenException('Device is not available');
+      const owners = (await tx.query('SELECT id FROM dalumaga.app_user WHERE id=$1 FOR UPDATE', [
+        target.user_id,
+      ])) as { id: string }[];
+      const owner = owners[0];
+      if (!owner) throw new ForbiddenException('Device is not available');
+      const roles = (await tx.query(
+        'SELECT role_code FROM dalumaga.user_role WHERE user_id=$1 FOR SHARE',
+        [owner.id],
+      )) as { role_code: string }[];
+      if (
+        !roles.some((r) => ['weigher', 'receiver', 'driver'].includes(r.role_code)) ||
+        roles.some((r) => ['admin', 'manager'].includes(r.role_code))
+      )
+        throw new ForbiddenException('Device is not available');
+      const devices = (await tx.query(
+        `WITH changed AS (
+          UPDATE dalumaga.staff_device d SET revoked_at=now()
+          WHERE d.id=$1 AND d.user_id=$2 AND d.revoked_at IS NULL
+          RETURNING d.id,d.user_id
+        ) SELECT * FROM changed`,
+        [id, owner.id],
+      )) as { id: string; user_id: string }[];
+      const device = devices[0];
+      if (!device) throw new ForbiddenException('Device is not available');
+      await tx.query(
+        'UPDATE dalumaga.staff_session SET revoked_at=COALESCE(revoked_at,now()) WHERE device_id=$1 AND user_id=$2',
+        [id, device.user_id],
+      );
+      await tx.query(
+        `INSERT INTO dalumaga.audit_log(actor_id,action,entity_type,entity_id,detail)
+         VALUES($1,'recovery_revoke','staff_device',$2,jsonb_build_object('reason',$3::text,'userId',$4::text))`,
+        [admin.id, id, reason, device.user_id],
+      );
+    });
+  }
   async onModuleDestroy(): Promise<void> {
     if (this.db?.isInitialized) await this.db.destroy();
   }

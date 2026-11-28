@@ -33,6 +33,7 @@ type Load = {
 const API = process.env.EXPO_PUBLIC_API_URL || 'http://10.0.2.2:3000/v1';
 export default function App() {
   const [db, setDb] = useState<SQLiteDatabase>();
+  const [storageUnavailable, setStorageUnavailable] = useState(false);
   const [username, setUsername] = useState(''),
     [password, setPassword] = useState('');
   const [token, setToken] = useState(''),
@@ -56,9 +57,10 @@ export default function App() {
   useEffect(() => {
     void openStaffQueue()
       .then(setDb)
-      .catch((error: unknown) =>
-        setMessage(error instanceof Error ? error.message : 'Cannot open encrypted local storage'),
-      );
+      .catch((error: unknown) => {
+        setStorageUnavailable(true);
+        setMessage(error instanceof Error ? error.message : 'Cannot open encrypted local storage');
+      });
   }, []);
   async function refresh(database: SQLiteDatabase, actor: string) {
     setPending((await listStaffPending(database, actor)).length);
@@ -305,6 +307,19 @@ export default function App() {
       {!user ? (
         <>
           <Text style={{ fontSize: 22 }}>Staff sign in / සේවක පිවිසුම</Text>
+          {storageUnavailable && (
+            <>
+              <Text accessibilityRole="alert" style={{ fontSize: 18, fontWeight: '700' }}>
+                Local readings are unavailable / දුරකථනයේ බර සටහන් විවෘත කළ නොහැක
+              </Text>
+              <Text>
+                Do not uninstall or clear app data. Contact your administrator and keep this phone.
+              </Text>
+              <Text>යෙදුම ඉවත් නොකරන්න. දත්ත මකා නොදමන්න. දුරකථනය තබාගෙන පරිපාලක අමතන්න.</Text>
+              <Text>Readings not yet sent may exist only on this phone.</Text>
+              <Text>යවා නොමැති බර සටහන් මෙම දුරකථනයේ පමණක් තිබිය හැක.</Text>
+            </>
+          )}
           <Text>Username / පරිශීලක නාමය</Text>
           <TextInput
             accessibilityLabel="Username / පරිශීලක නාමය"
